@@ -19,7 +19,13 @@
       "Name": "Personal (gmail)",
       "Tooltip": "Claude usage for fahimbinshad@gmail.com",
       "Icon": "imgs/personal",
-      "Controllers": ["Keypad"],
+      "Controllers": ["Keypad", "Encoder"],
+      "Encoder": {
+        "layout": "layouts/usage-strip.json",
+        "StackColor": "#60a5fa",
+        "Icon": "imgs/personal",
+        "TriggerDescription": { "Touch": "Open claude.ai usage", "Push": "Open claude.ai usage" }
+      },
       "States": [{ "Image": "imgs/key-personal" }]
     },
     {
@@ -27,7 +33,13 @@
       "Name": "Mi Assist (claude2)",
       "Tooltip": "Claude usage for fahim@miassist.ai",
       "Icon": "imgs/business",
-      "Controllers": ["Keypad"],
+      "Controllers": ["Keypad", "Encoder"],
+      "Encoder": {
+        "layout": "layouts/usage-strip.json",
+        "StackColor": "#c084fc",
+        "Icon": "imgs/business",
+        "TriggerDescription": { "Touch": "Open claude.ai usage", "Push": "Open claude.ai usage" }
+      },
       "States": [{ "Image": "imgs/key-business" }]
     }
   ]

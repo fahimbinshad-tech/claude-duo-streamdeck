@@ -36,7 +36,7 @@ const ACCOUNTS = {
 
 // actionUUID -> { data, error, fetchedAt }
 const cache = {};
-// streamdeck context -> actionUUID
+// streamdeck context -> { action, controller }  (controller: "Keypad" | "Encoder")
 const contexts = new Map();
 
 function readKeychain(service, account) {
@@ -147,6 +147,43 @@ function renderSvg(actionUUID) {
   return parts.join('');
 }
 
+// 200x100 landscape render for the Stream Deck + touch strip
+function renderStripSvg(actionUUID) {
+  const acct = ACCOUNTS[actionUUID];
+  const entry = cache[actionUUID] || {};
+  const parts = [];
+  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">`);
+  parts.push(`<rect width="200" height="100" fill="#16161d"/>`);
+  parts.push(`<text x="8" y="17" font-family="-apple-system, Helvetica" font-size="13" font-weight="700" fill="${acct.accent}">${esc(acct.label)}</text>`);
+
+  if (entry.data && entry.data.rows.length) {
+    const cd = countdown(entry.data.sessionResetsAt);
+    if (cd) {
+      parts.push(`<text x="192" y="17" text-anchor="end" font-family="-apple-system, Helvetica" font-size="10" fill="#6b7280">5h ${esc(cd)}${entry.error ? ' !' : ''}</text>`);
+    }
+    let y = 28;
+    for (const row of entry.data.rows) {
+      const pct = Math.max(0, Math.min(100, Math.round(row.pct)));
+      const color = severityColor(pct);
+      const barW = Math.max(2, Math.round((pct / 100) * 122));
+      parts.push(`<text x="8" y="${y + 9}" font-family="-apple-system, Helvetica" font-size="11" font-weight="600" fill="#9ca3af">${esc(row.tag)}</text>`);
+      parts.push(`<rect x="32" y="${y}" width="122" height="10" rx="5" fill="#2b2b33"/>`);
+      parts.push(`<rect x="32" y="${y}" width="${barW}" height="10" rx="5" fill="${color}"/>`);
+      parts.push(`<text x="192" y="${y + 9}" text-anchor="end" font-family="-apple-system, Helvetica" font-size="11" font-weight="700" fill="${color}">${pct}</text>`);
+      y += 23;
+    }
+  } else if (entry.error === 'EXPIRED') {
+    parts.push(`<text x="100" y="55" text-anchor="middle" font-family="-apple-system, Helvetica" font-size="13" font-weight="700" fill="#ef4444">TOKEN EXPIRED</text>`);
+    parts.push(`<text x="100" y="74" text-anchor="middle" font-family="-apple-system, Helvetica" font-size="10" fill="#6b7280">open claude to fix</text>`);
+  } else if (entry.error) {
+    parts.push(`<text x="100" y="58" text-anchor="middle" font-family="-apple-system, Helvetica" font-size="12" fill="#f59e0b">retrying…</text>`);
+  } else {
+    parts.push(`<text x="100" y="58" text-anchor="middle" font-family="-apple-system, Helvetica" font-size="12" fill="#6b7280">loading…</text>`);
+  }
+  parts.push(`</svg>`);
+  return parts.join('');
+}
+
 // ---------- Stream Deck wiring ----------
 
 const args = {};
@@ -162,7 +199,9 @@ if (args.test !== undefined || process.argv.includes('--test')) {
       console.log(ACCOUNTS[uuid].label, JSON.stringify(entry.data || entry.error));
       const svgPath = path.join(__dirname, '..', 'logs', `test-${ACCOUNTS[uuid].label}.svg`);
       fs.writeFileSync(svgPath, renderSvg(uuid));
-      console.log('svg ->', svgPath);
+      const stripPath = path.join(__dirname, '..', 'logs', `test-strip-${ACCOUNTS[uuid].label}.svg`);
+      fs.writeFileSync(stripPath, renderStripSvg(uuid));
+      console.log('svg ->', svgPath, '|', stripPath);
     }
     process.exit(0);
   })();
@@ -176,14 +215,23 @@ function send(msg) {
 }
 
 function renderContext(context) {
-  const actionUUID = contexts.get(context);
-  if (!actionUUID) return;
-  const svg = renderSvg(actionUUID);
-  send({
-    event: 'setImage',
-    context,
-    payload: { image: 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64'), target: 0 },
-  });
+  const info = contexts.get(context);
+  if (!info) return;
+  if (info.controller === 'Encoder') {
+    const svg = renderStripSvg(info.action);
+    send({
+      event: 'setFeedback',
+      context,
+      payload: { canvas: 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64') },
+    });
+  } else {
+    const svg = renderSvg(info.action);
+    send({
+      event: 'setImage',
+      context,
+      payload: { image: 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64'), target: 0 },
+    });
+  }
 }
 
 function renderAll() {
@@ -191,7 +239,7 @@ function renderAll() {
 }
 
 async function fetchAll() {
-  const active = new Set(contexts.values());
+  const active = new Set([...contexts.values()].map((info) => info.action));
   await Promise.all([...active].map((uuid) => fetchUsage(uuid)));
   renderAll();
 }
@@ -208,7 +256,7 @@ ws.on('message', (buf) => {
   try { ev = JSON.parse(buf.toString()); } catch { return; }
   switch (ev.event) {
     case 'willAppear':
-      contexts.set(ev.context, ev.action);
+      contexts.set(ev.context, { action: ev.action, controller: ev.payload?.controller || 'Keypad' });
       renderContext(ev.context);
       if (!cache[ev.action]) fetchUsage(ev.action).then(() => renderContext(ev.context));
       break;
@@ -216,6 +264,8 @@ ws.on('message', (buf) => {
       contexts.delete(ev.context);
       break;
     case 'keyDown':
+    case 'touchTap':
+    case 'dialDown':
       send({ event: 'openUrl', payload: { url: 'https://claude.ai/settings/usage' } });
       break;
   }
