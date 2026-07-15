@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "UUID": "com.fahim.claude-duo",
+  "Name": "Claude Duo Usage",
+  "Version": "1.0.0.0",
+  "Author": "Fahim Shad",
+  "Description": "Live Claude Code usage (session + weekly + Fable) for both Claude accounts",
+  "Category": "Claude Duo",
+  "CategoryIcon": "imgs/category",
+  "Icon": "imgs/plugin",
+  "CodePath": "bin/plugin.js",
+  "SDKVersion": 2,
+  "Software": { "MinimumVersion": "6.5" },
+  "OS": [{ "Platform": "mac", "MinimumVersion": "12" }],
+  "Nodejs": { "Version": "20" },
+  "Actions": [
+    {
+      "UUID": "com.fahim.claude-duo.personal",
+      "Name": "Personal (gmail)",
+      "Tooltip": "Claude usage for fahimbinshad@gmail.com",
+      "Icon": "imgs/personal",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/key-personal" }]
+    },
+    {
+      "UUID": "com.fahim.claude-duo.business",
+      "Name": "Mi Assist (claude2)",
+      "Tooltip": "Claude usage for fahim@miassist.ai",
+      "Icon": "imgs/business",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/key-business" }]
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "com.fahim.claude-duo",
+  "version": "1.0.0",
+  "private": true,
+  "main": "bin/plugin.js",
+  "dependencies": { "ws": "^8.18.0" }
+}
