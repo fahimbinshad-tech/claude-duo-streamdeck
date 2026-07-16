@@ -215,6 +215,96 @@ function invader(x, y, s, color) {
   return parts.join('');
 }
 
+// ---- the little Claude creature ----
+// state-driven pixel mascot: chill (blinks), sleep, working (typing),
+// alert (a session needs you), panic (a usage limit is critical)
+let mascotFrame = 0;
+
+function mascotGrid({ eyes = 'open', mouth = 'smile', arms = null }) {
+  const r = (s) => s.split('');
+  const g = [
+    r('..oooooooooo..'),
+    r('.oooooooooooo.'),
+    r('oooooooooooooo'),
+    r('oooooooooooooo'),
+    r('oooooooooooooo'),
+    r('oooooooooooooo'),
+    r('oooooooooooooo'),
+    r('oooooooooooooo'),
+    r('.oooooooooooo.'),
+    r('..oooooooooo..'),
+    r('..dd......dd..'),
+  ];
+  const setPx = (row, col, ch) => { if (g[row] && g[row][col] !== undefined) g[row][col] = ch; };
+  if (eyes === 'open') {
+    [[3, 3], [3, 4], [4, 3], [4, 4], [3, 9], [3, 10], [4, 9], [4, 10]].forEach(([r2, c]) => setPx(r2, c, 'd'));
+  } else if (eyes === 'closed') {
+    [[4, 3], [4, 4], [4, 9], [4, 10]].forEach(([r2, c]) => setPx(r2, c, 'd'));
+  } else if (eyes === 'down') {
+    [[4, 3], [4, 4], [5, 3], [5, 4], [4, 9], [4, 10], [5, 9], [5, 10]].forEach(([r2, c]) => setPx(r2, c, 'd'));
+  }
+  if (mouth === 'smile') {
+    [[6, 5], [7, 6], [7, 7], [6, 8]].forEach(([r2, c]) => setPx(r2, c, 'd'));
+  } else if (mouth === 'o') {
+    [[6, 6], [6, 7], [7, 6], [7, 7]].forEach(([r2, c]) => setPx(r2, c, 'd'));
+  }
+  if (arms === 'up') {
+    [[1, 0], [0, 0], [1, 13], [0, 13]].forEach(([r2, c]) => setPx(r2, c, 'd'));
+  } else if (arms === 'type-a') {
+    [[7, 0], [8, 1]].forEach(([r2, c]) => setPx(r2, c, 'd'));
+  } else if (arms === 'type-b') {
+    [[8, 0], [7, 1], [7, 12], [8, 13]].forEach(([r2, c]) => setPx(r2, c, 'd'));
+  }
+  return g;
+}
+
+const MASCOT_STATES = {
+  chill: (f) => ({ grid: mascotGrid({ eyes: f % 5 === 4 ? 'closed' : 'open' }), body: C.coral, bob: f % 2 }),
+  sleep: (f) => ({ grid: mascotGrid({ eyes: 'closed', mouth: 'o' }), body: C.coral, bob: 0, zzz: f % 2 }),
+  working: (f) => ({ grid: mascotGrid({ eyes: 'down', arms: f % 2 ? 'type-a' : 'type-b' }), body: C.coral, bob: 0 }),
+  alert: (f) => ({ grid: mascotGrid({ eyes: 'open', mouth: 'o', arms: 'up' }), body: C.coral, bob: f % 2 ? 2 : 0, bang: true }),
+  panic: (f) => ({ grid: mascotGrid({ eyes: 'open', mouth: 'o', arms: 'up' }), body: C.red, bob: f % 2 ? 3 : 0, bang: true, sweat: f % 2 }),
+};
+
+function mascotState() {
+  let worst = 0;
+  for (const entry of Object.values(cache)) {
+    for (const m of [entry.data?.current, entry.data?.weekly]) {
+      if (m && m.pct > worst) worst = m.pct;
+    }
+  }
+  if (worst >= 90) return 'panic';
+  if (waitingCount() > 0) return 'alert';
+  if (sessions.list.some((s) => s.state === 'working')) return 'working';
+  if (!sessions.list.length) return 'sleep';
+  return 'chill';
+}
+
+function mascotSvg(x, y, scale, state, frame) {
+  const { grid, body, bob = 0, zzz, bang, sweat } = MASCOT_STATES[state](frame);
+  const colors = { o: body, d: '#332017', w: '#BFDBFE' };
+  const parts = [`<g>`];
+  const yy = y + bob;
+  grid.forEach((row, r) => {
+    row.forEach((ch, c) => {
+      if (colors[ch]) parts.push(`<rect x="${x + c * scale}" y="${yy + r * scale}" width="${scale}" height="${scale}" fill="${colors[ch]}"/>`);
+    });
+  });
+  if (sweat) {
+    parts.push(`<rect x="${x - scale}" y="${yy + scale}" width="${scale}" height="${scale}" fill="#BFDBFE"/>`);
+    parts.push(`<rect x="${x + 15 * scale}" y="${yy + 3 * scale}" width="${scale}" height="${scale}" fill="#BFDBFE"/>`);
+  }
+  if (zzz !== undefined) {
+    parts.push(`<text x="${x + 15 * scale}" y="${yy + (zzz ? 2 : 4) * scale}" font-family="${SANS}" font-size="${scale * 3.2}" font-weight="800" fill="${C.muted}">z</text>`);
+    parts.push(`<text x="${x + 17 * scale}" y="${yy + (zzz ? 5 : 3) * scale}" font-family="${SANS}" font-size="${scale * 2.2}" font-weight="800" fill="${C.muted}">z</text>`);
+  }
+  if (bang) {
+    parts.push(`<text x="${x + 15.5 * scale}" y="${yy + 4 * scale}" font-family="${SANS}" font-size="${scale * 5}" font-weight="900" fill="${body === C.red ? C.red : C.amber}">!</text>`);
+  }
+  parts.push('</g>');
+  return parts.join('');
+}
+
 // Small static Claude spark
 function spark(cx, cy, r, color) {
   const rays = [
@@ -355,12 +445,16 @@ function duoInner(w) {
   parts.push(`<rect width="${w}" height="100" fill="${C.bg}"/>`);
   let x0 = 4;
   if (w >= 760) {
-    parts.push(spark(36, 50, 28, C.coral));
-    parts.push(`<text x="74" y="60" font-family="${SERIF}" font-size="32" font-weight="700" fill="${C.cream}">Claude</text>`);
+    const st = mascotState();
+    parts.push(mascotSvg(14, 22, 4, st, mascotFrame));
+    parts.push(`<text x="86" y="52" font-family="${SERIF}" font-size="30" font-weight="700" fill="${C.cream}">Claude</text>`);
     const waiting = waitingCount();
     if (waiting) {
-      parts.push(`<circle cx="80" cy="79" r="4" fill="${C.amber}"/>`);
-      parts.push(`<text x="89" y="83" font-family="${SANS}" font-size="11" font-weight="700" fill="${C.amber}">${waiting} session${waiting > 1 ? 's' : ''} need${waiting > 1 ? '' : 's'} you</text>`);
+      parts.push(`<circle cx="92" cy="68" r="4" fill="${C.amber}"/>`);
+      parts.push(`<text x="100" y="72" font-family="${SANS}" font-size="11" font-weight="700" fill="${C.amber}">${waiting} need${waiting > 1 ? '' : 's'} you</text>`);
+    } else {
+      const label = { chill: 'all good', sleep: 'sleeping', working: 'working…', panic: 'limit close!', alert: '' }[st];
+      if (label) parts.push(`<text x="88" y="72" font-family="${SANS}" font-size="11" fill="${st === 'panic' ? C.red : C.muted}">${label}</text>`);
     }
     x0 = 196;
   }
@@ -435,8 +529,14 @@ function parseLines(text) {
 // name shown in claude --resume / the phone app)
 function inspectSession(file, size) {
   const tail = parseLines(readChunk(file, Math.max(0, size - 16384), Math.min(size, 16384)));
-  const head = size > 16384 ? parseLines(readChunk(file, 0, 8192)) : [];
-  const last = tail.length ? tail[tail.length - 1] : null;
+  // the first human message can sit far into the file (big context blocks),
+  // so read a generous head slice
+  const head = size > 16384 ? parseLines(readChunk(file, 0, 262144)) : [];
+  // bookkeeping entries (bridge-session, mode, last-prompt) aren't conversation
+  const meaningful = [...tail].reverse().find((e) => e.type === 'assistant' || e.type === 'user');
+  const last = meaningful || (tail.length ? tail[tail.length - 1] : null);
+  const cwdEntry = [...tail].reverse().find((e) => e.cwd) || head.find((e) => e.cwd);
+  const launchCwd = head.find((e) => e.cwd)?.cwd || null;
   let title = null;
   for (const e of [...head, ...tail]) {
     if (e.type === 'summary' && typeof e.summary === 'string') title = e.summary;
@@ -447,7 +547,7 @@ function inspectSession(file, size) {
       if (t) { title = t; break; }
     }
   }
-  return { last, title };
+  return { last, title, launchCwd, cwd: cwdEntry?.cwd || '' };
 }
 
 // first real human message — skips system-reminders, command tags, sidechains
@@ -471,6 +571,7 @@ function scanSessions() {
   let dirs = [];
   try { dirs = fs.readdirSync(SESSIONS_DIR); } catch { return; }
   for (const dir of dirs) {
+    if (/claude-mem|observer-sessions/.test(dir)) continue; // daemon noise
     let files = [];
     try { files = fs.readdirSync(path.join(SESSIONS_DIR, dir)); } catch { continue; }
     for (const f of files) {
@@ -487,9 +588,8 @@ function scanSessions() {
   const seen = new Set();
   const list = [];
   for (const s of found.slice(0, 18)) {
-    const { last, title } = inspectSession(s.p, s.size);
+    const { last, title, launchCwd, cwd } = inspectSession(s.p, s.size);
     const entry = last || {};
-    const cwd = entry.cwd || '';
     // daemon/observer noise, not real chats
     if (/\/\.claude|observer-sessions/.test(cwd)) continue;
     const key = cwd || s.p;
@@ -503,7 +603,7 @@ function scanSessions() {
     const folder = cwd && cwd !== home ? path.basename(cwd) : '~';
     const name = (title || folder).slice(0, 34);
     const src = claude2Ids.has(s.id) ? 'business' : 'personal';
-    list.push({ name, folder: title ? folder.slice(0, 14) : '', cwd, state, ageMs, src });
+    list.push({ name, folder: title ? folder.slice(0, 14) : '', cwd, launchCwd, state, ageMs, src });
   }
   const rank = { waiting: 0, working: 1 };
   // live sessions only — working or waiting; stale/idle ones don't make the board
@@ -561,7 +661,8 @@ function sessionsInner(w) {
   parts.push(`<text x="${w - 10}" y="14" text-anchor="end" font-family="${SANS}" font-size="11" font-weight="600" fill="${waiting ? C.amber : C.muted}">${esc(summary)}</text>`);
 
   if (!sessions.list.length) {
-    parts.push(`<text x="${w / 2}" y="62" text-anchor="middle" font-family="${SANS}" font-size="14" fill="${C.muted}">All quiet — no live sessions</text>`);
+    parts.push(mascotSvg(w / 2 - 70, 38, 3.4, 'sleep', mascotFrame));
+    parts.push(`<text x="${w / 2 + 14}" y="68" font-family="${SANS}" font-size="14" fill="${C.muted}">All quiet — no live sessions</text>`);
     return parts.join('');
   }
 
@@ -611,15 +712,77 @@ function sessionsKeySvg() {
   return parts.join('');
 }
 
-// Tap a session row -> bring that project's Warp window to the front
-function focusSession(s) {
-  const name = (s.cwd ? path.basename(s.cwd) : '').replace(/["\\]/g, '');
-  execFile('/usr/bin/osascript', ['-e', 'tell application "Warp" to activate'], () => {
-    if (!name) return;
-    execFile('/usr/bin/osascript', ['-e',
-      `tell application "System Events" to tell process "Warp" to perform action "AXRaise" of (first window whose title contains "${name}")`,
-    ], () => {});
+// ---- session -> hosting app wiring ----
+// Match each session to its live `claude` process (by launch cwd), walk the
+// parent chain to the GUI app hosting it (Warp/Claude app/iTerm/...), so a
+// tap opens the RIGHT app. `open -b` needs no macOS permissions.
+const HOST_APPS = [
+  ['/Warp.app/', 'dev.warp.Warp-Stable', 'Warp'],
+  ['/Claude.app/', 'com.anthropic.claudefordesktop', 'Claude'],
+  ['/iTerm.app/', 'com.googlecode.iterm2', 'iTerm'],
+  ['/Terminal.app/', 'com.apple.Terminal', 'Terminal'],
+  ['/Cursor.app/', 'com.todesktop.230313mzl4w4u92', 'Cursor'],
+  ['/Visual Studio Code.app/', 'com.microsoft.VSCode', 'VS Code'],
+];
+
+function enrichSessionApps(done) {
+  execFile('/bin/ps', ['-axo', 'pid=,ppid=,command='], { maxBuffer: 8 * 1024 * 1024 }, (err, out) => {
+    if (err || !out) return done && done();
+    const table = {};
+    const candidates = [];
+    for (const line of out.split('\n')) {
+      const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+      if (!m) continue;
+      table[+m[1]] = { ppid: +m[2], cmd: m[3] };
+      if (/(^|\/)claude(\s|$)/.test(m[3]) && !m[3].includes('claude-duo')) candidates.push(+m[1]);
+    }
+    if (!candidates.length) return done && done();
+    execFile('/usr/sbin/lsof', ['-a', '-p', candidates.join(','), '-d', 'cwd', '-Fn'], { maxBuffer: 2 * 1024 * 1024 }, (e2, out2) => {
+      const cwdByPid = {};
+      let cur = null;
+      for (const line of (out2 || '').split('\n')) {
+        if (line[0] === 'p') cur = +line.slice(1);
+        else if (line[0] === 'n' && cur) cwdByPid[cur] = line.slice(1);
+      }
+      const ancestorApp = (pid) => {
+        let p = pid, hops = 0;
+        while (p && p > 1 && hops++ < 25) {
+          const row = table[p];
+          if (!row) break;
+          for (const [needle, bundle, name] of HOST_APPS) {
+            if (row.cmd.includes(needle)) return { bundle, name };
+          }
+          p = row.ppid;
+        }
+        return null;
+      };
+      for (const s of sessions.list) {
+        for (const pid of candidates) {
+          const pcwd = cwdByPid[pid];
+          if (!pcwd) continue;
+          if (pcwd === s.launchCwd || pcwd === s.cwd) {
+            const app = ancestorApp(pid);
+            if (app) { s.bundle = app.bundle; s.appName = app.name; }
+            break;
+          }
+        }
+      }
+      done && done();
+    });
   });
+}
+
+// Tap/press -> open the app actually hosting that session, then try to raise
+// the matching window (best-effort; logs why if macOS blocks it)
+function focusSession(s) {
+  const bundle = s.bundle || 'dev.warp.Warp-Stable';
+  log(`focus: "${s.name}" app=${s.appName || 'default(Warp)'} bundle=${bundle}`);
+  execFile('/usr/bin/open', ['-b', bundle], (e) => { if (e) log('open -b failed:', e.message); });
+  const needle = (s.launchCwd || s.cwd ? path.basename(s.launchCwd || s.cwd) : '').replace(/["\\]/g, '');
+  if (!needle || needle === os.homedir().split('/').pop()) return;
+  execFile('/usr/bin/osascript', ['-e',
+    `tell application "System Events" to tell (first process whose bundle identifier is "${bundle}") to perform action "AXRaise" of (first window whose title contains "${needle}")`,
+  ], (e, _so, se) => { if (e) log('window raise skipped:', String(se || e.message).trim().slice(0, 140)); });
 }
 
 // ---------- Stream Deck wiring ----------
@@ -752,11 +915,17 @@ ws.on('open', () => {
   setInterval(fetchAll, FETCH_INTERVAL_MS);
   setInterval(renderAll, RENDER_INTERVAL_MS);
   scanSessions();
+  enrichSessionApps(renderAll);
   setInterval(() => {
-    const before = JSON.stringify(sessions.list);
     scanSessions();
-    if (JSON.stringify(sessions.list) !== before) renderAll();
+    enrichSessionApps(renderAll);
   }, 15_000);
+  // mascot heartbeat — gentle 2-frame animation, state-driven
+  setInterval(() => {
+    if (!contexts.size) return;
+    mascotFrame++;
+    renderAll();
+  }, 700);
 });
 
 ws.on('message', (buf) => {
