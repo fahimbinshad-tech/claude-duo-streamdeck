@@ -500,6 +500,30 @@ const ACCOUNT_COLORS = { personal: '#60A5FA', business: '#F472B6' };
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
+
+// The conversation topic (same text the terminal tab shows) lives in
+// "summary" entries that can sit ANYWHERE in the transcript — full-scan for
+// the latest one, cached per session for 5 minutes.
+const titleCache = {};
+function sessionTopic(sessionId, file, size) {
+  const hit = titleCache[sessionId];
+  if (hit && Date.now() - hit.at < 300_000 && hit.size === size) return hit.title;
+  let title = null;
+  try {
+    if (size < 30 * 1024 * 1024) {
+      const text = fs.readFileSync(file, 'utf8');
+      for (const line of text.split('\n')) {
+        if (!line.includes('"type":"summary"')) continue;
+        try {
+          const e = JSON.parse(line);
+          if (e.type === 'summary' && typeof e.summary === 'string') title = e.summary;
+        } catch {}
+      }
+    }
+  } catch {}
+  titleCache[sessionId] = { title, at: Date.now(), size };
+  return title;
+}
 const sessions = { list: [], scannedAt: 0 };
 let sessionSel = 0;
 
@@ -585,7 +609,7 @@ function scanSessions() {
         const tf = path.join(home, '.claude', 'projects', slug, `${j.sessionId}.jsonl`);
         try {
           const st = fs.statSync(tf);
-          title = inspectSession(tf, st.size).title;
+          title = sessionTopic(j.sessionId, tf, st.size) || inspectSession(tf, st.size).title;
         } catch {}
       }
       list.push({
