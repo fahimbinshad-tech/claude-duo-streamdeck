@@ -994,9 +994,9 @@ ws.on('message', (buf) => {
     case 'dialDown': {
       if (ev.action === SESSIONS_ACTION) {
         if (ev.event === 'dialDown') {
-          // press the knob -> open the highlighted session
+          // press the knob -> open the highlighted session's exact chat
           const target = sessions.list[sessionSel];
-          if (target) focusSession(target);
+          if (target) focusSession(target, { deep: true });
           break;
         }
         if (ev.event === 'touchTap' && Array.isArray(ev.payload?.tapPos)) {
@@ -1010,7 +1010,8 @@ ws.on('message', (buf) => {
           const target = sessions.list[pageStart + cardIdx];
           if (target && ev.payload.tapPos[1] >= CARD_TOP) {
             sessionSel = pageStart + cardIdx;
-            focusSession(target, { deep: !!ev.payload.hold });
+            // quick tap -> exact chat on claude.ai; HOLD -> try the terminal
+            focusSession(target, { deep: !ev.payload.hold });
             renderAll();
             break;
           }
@@ -1020,9 +1021,9 @@ ws.on('message', (buf) => {
         break;
       }
       if (ev.event === 'dialDown') {
-        // on the usage page: press a knob -> jump to the session waiting longest
+        // on the usage page: press a knob -> open the chat waiting longest
         const needy = sessions.list.filter((s) => s.state === 'waiting').sort((a, b) => b.ageMs - a.ageMs)[0];
-        if (needy) { focusSession(needy); break; }
+        if (needy) { focusSession(needy, { deep: true }); break; }
       }
       send({ event: 'openUrl', payload: { url: 'https://claude.ai/settings/usage' } });
       break;
