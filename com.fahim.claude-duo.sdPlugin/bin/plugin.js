@@ -44,18 +44,31 @@ const FETCH_INTERVAL_MS = 120_000; // the endpoint rate-limits; be polite
 const RENDER_INTERVAL_MS = 30_000; // keeps "Resets in" countdowns fresh
 const backoffUntil = {}; // actionUUID -> timestamp to skip fetches until (429)
 
-const ACCOUNTS = {
-  'com.fahim.claude-duo.personal': {
-    label: 'Personal',
-    service: 'Claude Code-credentials',
-    account: 'fahimshad',
-  },
-  'com.fahim.claude-duo.business': {
-    label: 'Mi Assist',
-    service: 'Claude Code-credentials-76f8fc95',
-    account: 'fahimshad',
-  },
-};
+// Account config lives in accounts.json (private, gitignored) with
+// accounts.example.json as the fallback template. Each entry maps one of the
+// two plugin actions to a macOS Keychain entry that Claude Code maintains.
+const os = require('os');
+function loadAccounts() {
+  let cfg = {};
+  for (const f of ['accounts.json', 'accounts.example.json']) {
+    try {
+      cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', f), 'utf8'));
+      break;
+    } catch {}
+  }
+  const user = os.userInfo().username;
+  const defaults = {
+    personal: { label: 'Account 1', service: 'Claude Code-credentials' },
+    business: { label: 'Account 2', service: null },
+  };
+  const out = {};
+  for (const [key, base] of Object.entries(defaults)) {
+    const c = { ...base, ...(cfg[key] || {}) };
+    out[`com.fahim.claude-duo.${key}`] = { label: c.label, service: c.service, account: c.account || user };
+  }
+  return out;
+}
+const ACCOUNTS = loadAccounts();
 
 // Musing-style palette
 const C = {
@@ -109,6 +122,10 @@ function fetchUsage(actionUUID) {
 
 async function doFetchUsage(actionUUID) {
   const acct = ACCOUNTS[actionUUID];
+  if (!acct.service) {
+    cache[actionUUID] = { ...(cache[actionUUID] || {}), error: 'NOT_CONFIGURED' };
+    return;
+  }
   if (Date.now() < (backoffUntil[actionUUID] || 0)) return;
   try {
     const raw = await readKeychain(acct.service, acct.account);
@@ -260,6 +277,9 @@ function errorInner(entry, cx, cy) {
   if (entry.error === 'EXPIRED') {
     parts.push(`<text x="${cx}" y="${cy}" text-anchor="middle" font-family="${SANS}" font-size="14" font-weight="700" fill="${C.red}">TOKEN EXPIRED</text>`);
     parts.push(`<text x="${cx}" y="${cy + 18}" text-anchor="middle" font-family="${SANS}" font-size="10" fill="${C.muted}">open claude to fix</text>`);
+  } else if (entry.error === 'NOT_CONFIGURED') {
+    parts.push(`<text x="${cx}" y="${cy}" text-anchor="middle" font-family="${SANS}" font-size="14" font-weight="700" fill="${C.amber}">ADD ACCOUNT</text>`);
+    parts.push(`<text x="${cx}" y="${cy + 18}" text-anchor="middle" font-family="${SANS}" font-size="10" fill="${C.muted}">edit accounts.json</text>`);
   } else if (entry.error) {
     parts.push(`<text x="${cx}" y="${cy + 4}" text-anchor="middle" font-family="${SANS}" font-size="12" fill="${C.amber}">retrying…</text>`);
   } else {

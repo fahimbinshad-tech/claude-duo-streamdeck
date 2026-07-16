@@ -1,0 +1,4 @@
+{
+  "personal": { "label": "Account 1", "service": "Claude Code-credentials" },
+  "business": { "label": "Account 2", "service": null }
+}
