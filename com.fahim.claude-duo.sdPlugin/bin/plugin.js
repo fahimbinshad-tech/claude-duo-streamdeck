@@ -64,7 +64,7 @@ function loadAccounts() {
   const out = {};
   for (const [key, base] of Object.entries(defaults)) {
     const c = { ...base, ...(cfg[key] || {}) };
-    out[`com.fahim.claude-duo.${key}`] = { label: c.label, service: c.service, account: c.account || user };
+    out[`com.fahim.claude-duo.${key}`] = { label: c.label, service: c.service, account: c.account || user, chromeProfile: c.chromeProfile || null };
   }
   return out;
 }
