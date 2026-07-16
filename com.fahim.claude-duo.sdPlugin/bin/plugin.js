@@ -73,8 +73,22 @@ const C = {
 
 // actionUUID -> { data, error, fetchedAt }
 const cache = {};
+// actionUUID -> promise guard so a burst of willAppears fires ONE fetch
+const inFlight = {};
 // streamdeck context -> { action, controller, column }
 const contexts = new Map();
+
+// Persist last good data so restarts show numbers instantly (never "retrying")
+const CACHE_FILE = path.join(__dirname, '..', 'logs', 'cache.json');
+try {
+  const saved = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+  for (const [uuid, entry] of Object.entries(saved)) {
+    if (ACCOUNTS[uuid] && entry.data) cache[uuid] = { ...entry, error: null };
+  }
+} catch {}
+function persistCache() {
+  try { fs.writeFileSync(CACHE_FILE, JSON.stringify(cache)); } catch {}
+}
 
 function readKeychain(service, account) {
   return new Promise((resolve, reject) => {
@@ -87,7 +101,13 @@ function readKeychain(service, account) {
   });
 }
 
-async function fetchUsage(actionUUID) {
+function fetchUsage(actionUUID) {
+  if (inFlight[actionUUID]) return inFlight[actionUUID];
+  inFlight[actionUUID] = doFetchUsage(actionUUID).finally(() => { delete inFlight[actionUUID]; });
+  return inFlight[actionUUID];
+}
+
+async function doFetchUsage(actionUUID) {
   const acct = ACCOUNTS[actionUUID];
   if (Date.now() < (backoffUntil[actionUUID] || 0)) return;
   try {
@@ -109,6 +129,8 @@ async function fetchUsage(actionUUID) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
     cache[actionUUID] = { data: parseUsage(json), error: null, fetchedAt: Date.now() };
+    persistCache();
+    log(`fetch ${acct.label} ok: current=${cache[actionUUID].data.current?.pct}% weekly=${cache[actionUUID].data.weekly?.pct}%`);
   } catch (err) {
     const prev = cache[actionUUID] || {};
     cache[actionUUID] = { ...prev, error: err.message, fetchedAt: prev.fetchedAt };
@@ -421,14 +443,19 @@ function renderAll() {
 }
 
 async function fetchAll() {
+  // sequential with a gap — bursts trip the endpoint's rate limit
   const active = new Set([...contexts.values()].map((info) => info.action));
-  await Promise.all([...active].map((uuid) => fetchUsage(uuid)));
+  for (const uuid of active) {
+    await fetchUsage(uuid);
+    await new Promise((r) => setTimeout(r, 700));
+  }
   renderAll();
 }
 
 ws.on('open', () => {
   log('connected, registering', args.pluginUUID);
   send({ event: args.registerEvent, uuid: args.pluginUUID });
+  setTimeout(fetchAll, 3000); // one staggered initial fetch after willAppears settle
   setInterval(fetchAll, FETCH_INTERVAL_MS);
   setInterval(renderAll, RENDER_INTERVAL_MS);
 });
@@ -444,7 +471,6 @@ ws.on('message', (buf) => {
         column: ev.payload?.coordinates?.column ?? 0,
       });
       renderAll(); // re-render the whole group so wide panels re-stitch
-      if (!cache[ev.action]) fetchUsage(ev.action).then(renderAll);
       break;
     case 'willDisappear':
       contexts.delete(ev.context);
