@@ -822,13 +822,13 @@ function focusSession(s, opts = {}) {
 }
 
 function tabKeywords(name) {
-  const stop = new Set(['claude', 'session', 'about', 'their', 'there', 'which', 'would', 'could', 'should', 'going', 'want']);
+  const stop = new Set(['claude', 'session', 'sessions', 'about', 'their', 'there', 'which', 'would', 'could', 'should', 'going', 'want', 'need', 'have', 'that', 'this', 'with', 'look', 'through', 'make', 'sure', 'like', 'just']);
   return (name || '')
     .toLowerCase()
     .replace(/[^a-z0-9 ]/g, ' ')
     .split(/\s+/)
-    .filter((w) => w.length >= 5 && !stop.has(w))
-    .slice(0, 3);
+    .filter((w) => w.length >= 4 && !stop.has(w))
+    .slice(0, 5);
 }
 
 // ---------- Stream Deck wiring ----------
