@@ -3,5 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "main": "bin/plugin.js",
-  "dependencies": { "ws": "^8.18.0" }
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "ws": "^8.18.0"
+  }
 }

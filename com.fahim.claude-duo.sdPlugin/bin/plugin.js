@@ -14,6 +14,23 @@ const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
+const { Resvg } = require('@resvg/resvg-js');
+
+// Rasterize in-process with real font files so the deck shows EXACTLY what we
+// design (the Stream Deck app's own SVG font handling is unreliable).
+const FONT_OPTS = {
+  loadSystemFonts: false,
+  fontFiles: [
+    '/System/Library/Fonts/Supplemental/Georgia.ttf',
+    '/System/Library/Fonts/Supplemental/Georgia Bold.ttf',
+    '/System/Library/Fonts/Helvetica.ttc',
+  ],
+  defaultFontFamily: 'Helvetica',
+};
+function svgToPngDataUri(svg) {
+  const png = new Resvg(svg, { font: FONT_OPTS }).render().asPng();
+  return 'data:image/png;base64,' + Buffer.from(png).toString('base64');
+}
 
 const LOG_FILE = path.join(__dirname, '..', 'logs', 'plugin.log');
 fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
@@ -23,8 +40,9 @@ function log(...parts) {
 }
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
-const FETCH_INTERVAL_MS = 60_000;
+const FETCH_INTERVAL_MS = 120_000; // the endpoint rate-limits; be polite
 const RENDER_INTERVAL_MS = 30_000; // keeps "Resets in" countdowns fresh
+const backoffUntil = {}; // actionUUID -> timestamp to skip fetches until (429)
 
 const ACCOUNTS = {
   'com.fahim.claude-duo.personal': {
@@ -71,6 +89,7 @@ function readKeychain(service, account) {
 
 async function fetchUsage(actionUUID) {
   const acct = ACCOUNTS[actionUUID];
+  if (Date.now() < (backoffUntil[actionUUID] || 0)) return;
   try {
     const raw = await readKeychain(acct.service, acct.account);
     const creds = JSON.parse(raw).claudeAiOauth;
@@ -82,6 +101,11 @@ async function fetchUsage(actionUUID) {
       },
     });
     if (res.status === 401 || res.status === 403) throw new Error('EXPIRED');
+    if (res.status === 429) {
+      const retryAfter = Number(res.headers.get('retry-after')) || 300;
+      backoffUntil[actionUUID] = Date.now() + retryAfter * 1000;
+      throw new Error('HTTP 429');
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
     cache[actionUUID] = { data: parseUsage(json), error: null, fetchedAt: Date.now() };
@@ -125,8 +149,8 @@ function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-const SANS = "-apple-system, Helvetica";
-const SERIF = "Georgia, 'Times New Roman', serif";
+const SANS = 'Helvetica';
+const SERIF = 'Georgia';
 
 // Pixel space invader, scale s per pixel, coral
 const INVADER = [
@@ -196,7 +220,8 @@ function card(m, label, x, y, w, h, opts = {}) {
   const fillW = Math.max(4, Math.round((pct / 100) * barW));
   parts.push(`<rect x="${x + pad}" y="${barY}" width="${barW}" height="${barH}" rx="${barH / 2}" fill="${C.track}"/>`);
   parts.push(`<rect x="${x + pad}" y="${barY}" width="${fillW}" height="${barH}" rx="${barH / 2}" fill="${color}"/>`);
-  parts.push(`<text x="${x + pad}" y="${barY + barH + subSize + 4}" font-family="${SANS}" font-size="${subSize}" fill="${C.muted}">Resets in ${esc(countdown(m.resetsAt))}</text>`);
+  const sub = m.resetsAt ? `Resets in ${countdown(m.resetsAt)}` : 'Idle';
+  parts.push(`<text x="${x + pad}" y="${barY + barH + subSize + 4}" font-family="${SANS}" font-size="${subSize}" fill="${C.muted}">${esc(sub)}</text>`);
   return parts.join('');
 }
 
@@ -280,11 +305,9 @@ function duoInner(w) {
   parts.push(`<rect width="${w}" height="100" fill="${C.bg}"/>`);
   let x0 = 4;
   if (w >= 760) {
-    parts.push(spark(38, 46, 27, C.coral));
-    parts.push(`<text x="76" y="52" font-family="${SERIF}" font-size="30" font-weight="700" fill="${C.cream}">Claude</text>`);
-    parts.push(`<text x="78" y="74" font-family="${SANS}" font-size="12" letter-spacing="2" fill="${C.muted}">USAGE</text>`);
-    parts.push(invader(30, 78, 1.4, C.coral));
-    x0 = 190;
+    parts.push(spark(36, 50, 28, C.coral));
+    parts.push(`<text x="74" y="60" font-family="${SERIF}" font-size="32" font-weight="700" fill="${C.cream}">Claude</text>`);
+    x0 = 196;
   }
   const uuids = Object.keys(ACCOUNTS);
   const groupW = (w - x0) / uuids.length;
@@ -319,21 +342,33 @@ for (let i = 2; i < process.argv.length; i += 2) {
   args[process.argv[i].replace(/^-+/, '')] = process.argv[i + 1];
 }
 
-if (args.test !== undefined || process.argv.includes('--test')) {
+if (args.test !== undefined || process.argv.includes('--test') || process.argv.includes('--mock')) {
   (async () => {
+    const mock = process.argv.includes('--mock');
+    const future = (h) => new Date(Date.now() + h * 3600_000).toISOString();
     for (const uuid of Object.keys(ACCOUNTS)) {
-      await fetchUsage(uuid);
+      if (mock) {
+        const personal = uuid.endsWith('personal');
+        cache[uuid] = {
+          data: {
+            current: { pct: personal ? 29 : 10, resetsAt: future(1.2) },
+            weekly: { pct: personal ? 36 : 7, resetsAt: personal ? future(129) : future(56) },
+            model: null, modelName: null,
+          },
+          error: null, fetchedAt: Date.now(),
+        };
+      } else await fetchUsage(uuid);
       const entry = cache[uuid];
       const label = ACCOUNTS[uuid].label.replace(/\s+/g, '');
       console.log(label, JSON.stringify(entry.data || entry.error));
       const dir = path.join(__dirname, '..', 'logs');
-      fs.writeFileSync(path.join(dir, `test-key-${label}.svg`), renderSvg(uuid));
-      fs.writeFileSync(path.join(dir, `test-strip-${label}.svg`), `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">${stripInner(uuid, 200)}</svg>`);
-      fs.writeFileSync(path.join(dir, `test-wide-${label}.svg`), `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="100">${stripInner(uuid, 400)}</svg>`);
+      const pngOf = (svg) => Buffer.from(svgToPngDataUri(svg).split(',')[1], 'base64');
+      fs.writeFileSync(path.join(dir, `test-key-${label}.png`), pngOf(renderSvg(uuid)));
     }
     const dir = path.join(__dirname, '..', 'logs');
-    fs.writeFileSync(path.join(dir, 'test-duo-800.svg'), `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="100">${duoInner(800)}</svg>`);
-    console.log('svgs -> logs/');
+    const duoSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="100">${duoInner(800)}</svg>`;
+    fs.writeFileSync(path.join(dir, 'test-duo-800.png'), Buffer.from(svgToPngDataUri(duoSvg).split(',')[1], 'base64'));
+    console.log('pngs -> logs/ (exact device output)');
     process.exit(0);
   })();
   return;
@@ -370,14 +405,13 @@ function renderContext(context) {
     send({
       event: 'setFeedback',
       context,
-      payload: { canvas: 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64') },
+      payload: { canvas: svgToPngDataUri(svg) },
     });
   } else {
-    const svg = renderSvg(info.action);
     send({
       event: 'setImage',
       context,
-      payload: { image: 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64'), target: 0 },
+      payload: { image: svgToPngDataUri(renderSvg(info.action)), target: 0 },
     });
   }
 }
