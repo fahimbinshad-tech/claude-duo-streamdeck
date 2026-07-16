@@ -577,8 +577,19 @@ function scanSessions() {
       const state = status === 'busy' ? 'working' : status === 'idle' ? 'waiting' : status;
       const ageMs = Math.max(0, Date.now() - (j.statusUpdatedAt || j.updatedAt || Date.now()));
       const home = os.homedir();
+      // join registry -> transcript for the conversation topic (what the
+      // terminal tab title shows), falling back to the registry name
+      let title = null;
+      if (j.sessionId && j.cwd) {
+        const slug = j.cwd.replace(/[/.]/g, '-');
+        const tf = path.join(home, '.claude', 'projects', slug, `${j.sessionId}.jsonl`);
+        try {
+          const st = fs.statSync(tf);
+          title = inspectSession(tf, st.size).title;
+        } catch {}
+      }
       list.push({
-        name: (j.name || 'session').slice(0, 34),
+        name: (title || j.name || 'session').slice(0, 34),
         folder: j.cwd && j.cwd !== home ? path.basename(j.cwd).slice(0, 14) : '',
         cwd: j.cwd || '',
         pid: j.pid,
@@ -755,11 +766,25 @@ function focusSession(s, opts = {}) {
   const bundle = s.bundle || 'dev.warp.Warp-Stable';
   log(`focus: "${s.name}" app=${s.appName || 'default(Warp)'} bundle=${bundle}`);
   execFile('/usr/bin/open', ['-b', bundle], (e) => { if (e) log('open -b failed:', e.message); });
-  const needle = (s.name || '').replace(/["\\]/g, '');
+  const needle = (s.name || '').replace(/["\\]/g, '').slice(0, 18);
   if (!needle) return;
-  execFile('/usr/bin/osascript', ['-e',
-    `tell application "System Events" to tell (first process whose bundle identifier is "${bundle}") to perform action "AXRaise" of (first window whose title contains "${needle}")`,
-  ], (e, _so, se) => { if (e) log('window raise skipped:', String(se || e.message).trim().slice(0, 140)); });
+  // best-effort: raise the window, then try clicking the matching tab in the
+  // sidebar (requires Accessibility permission for Stream Deck; logged if not)
+  const script = `
+    tell application "System Events"
+      tell (first process whose bundle identifier is "${bundle}")
+        set frontmost to true
+        try
+          perform action "AXRaise" of (first window whose title contains "${needle}")
+        end try
+        try
+          click (first UI element of entire contents of window 1 whose role is "AXStaticText" and value contains "${needle}")
+        end try
+      end tell
+    end tell`;
+  execFile('/usr/bin/osascript', ['-e', script], (e, _so, se) => {
+    if (e) log('tab focus skipped (grant Stream Deck Accessibility?):', String(se || e.message).trim().slice(0, 140));
+  });
 }
 
 // ---------- Stream Deck wiring ----------
