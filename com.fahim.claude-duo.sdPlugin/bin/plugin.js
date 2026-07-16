@@ -445,6 +445,7 @@ const IDLE_ACTS = [
   { kind: 'look', ticks: 8 },
   { kind: 'hop', ticks: 8 },
   { kind: 'type', ticks: 10 },
+  { kind: 'punt', ticks: 12 },
   { kind: 'stretch', ticks: 8 },
   { kind: 'wave', ticks: 8 },
 ];
@@ -499,6 +500,12 @@ function chillPose(f) {
   if (act === 'alarm') {
     return { grid: mascotGrid({ eyes: 'angry', step: t % 2 ? 1 : 0 }), body: C.coral, bob: t % 2 ? 2 : 0, bang: true };
   }
+  if (act === 'punt') {
+    // codex pill slides in, Clawd boots it off the top of the screen
+    const kicking = t === 3 || t === 4;
+    const eyes = t < 3 ? 'right' : t < 5 ? 'angry' : 'closed';
+    return { grid: mascotGrid({ eyes, step: kicking ? 2 : 0 }), body: C.coral, bob: t > 4 ? t % 2 : 0, codex: t };
+  }
   // juggle (default) — front-leg kick when the ball is low
   const kicking = t % 4 === 0;
   return { grid: mascotGrid({ eyes: t % 6 === 5 ? 'closed' : 'open', step: kicking ? 2 : 0 }), body: C.coral, bob: t % 2, ball: true };
@@ -514,10 +521,10 @@ const MASCOT_STATES = {
 
 // time-aware greetings, like Claude Code's own hellos
 const GREET_SETS = {
-  night: ['Hey, Night Owl', 'Still going, Fahim?', 'The grind never sleeps'],
-  morning: ['Good morning, Fahim', 'Rise and build', 'Coffee, then conquer'],
-  day: ['Hey, Fahim', 'Back at it', 'What are we shipping?'],
-  evening: ['Good evening, Fahim', 'Golden hour grind', 'Evening, boss'],
+  night: ['Hey, Night Owl', 'burning midnight tokens', 'sleep is a feature, Fahim'],
+  morning: ['Morning, Fahim', 'coffee + Claude', 'rise and build'],
+  day: ["Hey Fahim, how's it going?", 'what are we shipping?', 'locked in'],
+  evening: ['evening, boss', 'golden hour grind', 'one more win today?'],
 };
 function greeting() {
   const h = new Date().getHours();
@@ -527,21 +534,22 @@ function greeting() {
 
 // constant chatter — quips tied to the current routine + live status facts
 const ACT_QUIPS = {
-  juggle: ['watch this touch', 'still got it', 'header incoming'],
-  alarm: ['a chat needs you!', 'check the board', 'someone is waiting'],
-  walk: ['just pacing', 'thinking…', 'lap number 47'],
-  spin: ['logo mode', 'wheee', 'spark form'],
-  dance: ['vibes only', 'shipping dance', 'lil celebration'],
-  look: ['anything new?', 'watching the board', 'all quiet?'],
-  hop: ['boing', 'hop hop', 'cardio'],
-  type: ['agents cooking', 'clack clack', 'deep in it'],
-  stretch: ['leg day', 'quick stretch', 'and… hold'],
-  wave: ['hey Fahim', 'yo boss', 'over here'],
+  juggle: ['watch this touch', 'better than Messi?', 'first touch: elite'],
+  alarm: ['a chat needs you!', 'someone is waiting on you'],
+  walk: ['pacing, plotting', 'idea loading', 'thinking walk'],
+  spin: ['going full asterisk', 'brand moment'],
+  dance: ['ship-it dance', 'small W, big vibes'],
+  look: ['scanning the board', 'all systems good?'],
+  hop: ['zoomies', 'bounce check'],
+  type: ['agents cooking', 'tokens flying', 'deep work mode'],
+  stretch: ['brb, stretching', 'posture check'],
+  wave: ['hey Fahim', 'yo, boss', 'sup Fahim'],
+  punt: ['bye, Codex', 'get punted', 'not on my deck'],
 };
 function speech() {
   const bucket = Math.floor(mascotFrame / 18); // new line ~every 8s
   const working = sessions.list.filter((s) => s.state === 'working').length;
-  const status = working > 0 ? [`${working} agent${working > 1 ? 's' : ''} cooking`, 'limits looking good'] : ['limits looking good'];
+  const status = working > 0 ? [`${working} agent${working > 1 ? 's' : ''} cooking`, 'limits looking good'] : ['limits looking good', 'plenty of runway'];
   const quips = ACT_QUIPS[IDLE_ACTS[actIdx].kind] || [];
   const pool = [greeting(), ...quips, ...status];
   return pool[bucket % pool.length];
@@ -565,7 +573,7 @@ function freshWaiting() {
 }
 
 function mascotSvg(x, y, scale, state, frame) {
-  const { grid, body, bob = 0, dx = 0, zzz, bang, sweat, ball, spinSpark } = MASCOT_STATES[state](frame);
+  const { grid, body, bob = 0, dx = 0, zzz, bang, sweat, ball, spinSpark, codex } = MASCOT_STATES[state](frame);
   if (spinSpark) {
     const cx = x + 8 * scale;
     const cy = y + 4.5 * scale;
@@ -591,6 +599,24 @@ function mascotSvg(x, y, scale, state, frame) {
   }
   if (bang) {
     parts.push(`<text x="${x + 15.5 * scale}" y="${yy + 4 * scale}" font-family="${SANS}" font-size="${scale * 5}" font-weight="900" fill="${body === C.red ? C.red : C.amber}">!</text>`);
+  }
+  if (codex !== undefined) {
+    // trajectory: slide in from the right, get kicked, fly off the top
+    const traj = [
+      [30, 9], [26, 9], [22, 9], [18.5, 9],       // sliding in
+      [18, 7], [20, 3.5], [22.5, 0], [25, -3.5],  // launched
+      [27.5, -7], [30, -10], [32, -13], [34, -16],
+    ];
+    const [cxg, cyg] = traj[Math.min(codex, traj.length - 1)];
+    const bx = x + cxg * scale;
+    const by = yy + cyg * scale;
+    const bw = 6.4 * scale;
+    const bh = 3.2 * scale;
+    const rot = codex > 3 ? (codex - 3) * 38 : 0;
+    parts.push(`<g transform="rotate(${rot} ${bx + bw / 2} ${by + bh / 2})">` +
+      `<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="${bh / 2}" fill="#ECECEC"/>` +
+      `<text x="${bx + bw / 2}" y="${by + bh * 0.72}" text-anchor="middle" font-family="${SANS}" font-size="${(bh * 0.62).toFixed(1)}" font-weight="700" fill="#111111">codex</text>` +
+      `</g>`);
   }
   if (ball) {
     // soccer ball juggle — foot, knee, header, knee
