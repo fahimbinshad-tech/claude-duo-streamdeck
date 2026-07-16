@@ -273,6 +273,45 @@ function stripSlice(actionUUID, sliceIndex, totalSlices) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="${200 * sliceIndex} 0 200 100">${inner}</svg>`;
 }
 
+// Unified dashboard: BOTH accounts across the whole touch bar (usually 800px).
+// Big Claude brand block on the left, then Personal + Mi Assist groups.
+function duoInner(w) {
+  const parts = [];
+  parts.push(`<rect width="${w}" height="100" fill="${C.bg}"/>`);
+  let x0 = 4;
+  if (w >= 760) {
+    parts.push(spark(38, 46, 27, C.coral));
+    parts.push(`<text x="76" y="52" font-family="${SERIF}" font-size="30" font-weight="700" fill="${C.cream}">Claude</text>`);
+    parts.push(`<text x="78" y="74" font-family="${SANS}" font-size="12" letter-spacing="2" fill="${C.muted}">USAGE</text>`);
+    parts.push(invader(30, 78, 1.4, C.coral));
+    x0 = 190;
+  }
+  const uuids = Object.keys(ACCOUNTS);
+  const groupW = (w - x0) / uuids.length;
+  uuids.forEach((uuid, i) => {
+    const acct = ACCOUNTS[uuid];
+    const entry = cache[uuid] || {};
+    const d = entry.data;
+    const gx = x0 + i * groupW;
+    parts.push(`<text x="${gx + groupW / 2}" y="12" text-anchor="middle" font-family="${SANS}" font-size="10" font-weight="700" letter-spacing="1.5" fill="${C.coral}">${esc(acct.label.toUpperCase())}</text>`);
+    if (d && d.current) {
+      const cardW = (groupW - 8 - 6 - 10) / 2;
+      const big = { pad: 10, pctSize: 30, pillSize: 10, barH: 10, subSize: 10 };
+      parts.push(card(d.current, 'Current', gx + 8, 17, cardW, 80, big));
+      parts.push(card(d.weekly, 'Weekly', gx + 8 + cardW + 6, 17, cardW, 80, big));
+    } else {
+      parts.push(errorInner(entry, gx + groupW / 2, 55));
+    }
+    if (i > 0) parts.push(`<rect x="${gx - 1}" y="14" width="1.5" height="76" fill="#2E2940"/>`);
+  });
+  return parts.join('');
+}
+
+function duoSlice(sliceIndex, totalSlices) {
+  const inner = duoInner(200 * totalSlices);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="${200 * sliceIndex} 0 200 100">${inner}</svg>`;
+}
+
 // ---------- Stream Deck wiring ----------
 
 const args = {};
@@ -292,6 +331,8 @@ if (args.test !== undefined || process.argv.includes('--test')) {
       fs.writeFileSync(path.join(dir, `test-strip-${label}.svg`), `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">${stripInner(uuid, 200)}</svg>`);
       fs.writeFileSync(path.join(dir, `test-wide-${label}.svg`), `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="100">${stripInner(uuid, 400)}</svg>`);
     }
+    const dir = path.join(__dirname, '..', 'logs');
+    fs.writeFileSync(path.join(dir, 'test-duo-800.svg'), `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="100">${duoInner(800)}</svg>`);
     console.log('svgs -> logs/');
     process.exit(0);
   })();
@@ -304,9 +345,9 @@ function send(msg) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
-function encoderGroup(actionUUID) {
+function allEncoders() {
   return [...contexts.entries()]
-    .filter(([, info]) => info.controller === 'Encoder' && info.action === actionUUID)
+    .filter(([, info]) => info.controller === 'Encoder')
     .sort((a, b) => (a[1].column ?? 0) - (b[1].column ?? 0));
 }
 
@@ -314,9 +355,18 @@ function renderContext(context) {
   const info = contexts.get(context);
   if (!info) return;
   if (info.controller === 'Encoder') {
-    const group = encoderGroup(info.action);
-    const idx = Math.max(0, group.findIndex(([ctx]) => ctx === context));
-    const svg = stripSlice(info.action, idx, Math.max(1, group.length));
+    const everyone = allEncoders();
+    const distinct = new Set(everyone.map(([, i]) => i.action));
+    let svg;
+    if (distinct.size >= 2) {
+      // both accounts on the bar -> one unified dashboard across every slot
+      const idx = Math.max(0, everyone.findIndex(([ctx]) => ctx === context));
+      svg = duoSlice(idx, Math.max(1, everyone.length));
+    } else {
+      const group = everyone.filter(([, i]) => i.action === info.action);
+      const idx = Math.max(0, group.findIndex(([ctx]) => ctx === context));
+      svg = stripSlice(info.action, idx, Math.max(1, group.length));
+    }
     send({
       event: 'setFeedback',
       context,
