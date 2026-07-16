@@ -393,6 +393,10 @@ function mascotGrid({ eyes = 'open', mouth = 'smile', arms = null }) {
     [[4, 3], [4, 4], [4, 9], [4, 10]].forEach(([r2, c]) => setPx(r2, c, 'd'));
   } else if (eyes === 'down') {
     [[4, 3], [4, 4], [5, 3], [5, 4], [4, 9], [4, 10], [5, 9], [5, 10]].forEach(([r2, c]) => setPx(r2, c, 'd'));
+  } else if (eyes === 'left') {
+    [[3, 2], [3, 3], [4, 2], [4, 3], [3, 8], [3, 9], [4, 8], [4, 9]].forEach(([r2, c]) => setPx(r2, c, 'd'));
+  } else if (eyes === 'right') {
+    [[3, 4], [3, 5], [4, 4], [4, 5], [3, 10], [3, 11], [4, 10], [4, 11]].forEach(([r2, c]) => setPx(r2, c, 'd'));
   }
   if (mouth === 'smile') {
     [[6, 5], [7, 6], [7, 7], [6, 8]].forEach(([r2, c]) => setPx(r2, c, 'd'));
@@ -409,10 +413,51 @@ function mascotGrid({ eyes = 'open', mouth = 'smile', arms = null }) {
   return g;
 }
 
+// idle routine — the creature is never still: it juggles, walks, morphs into
+// the spinning Claude spark, looks around, hops, repeat
+const IDLE_ACTS = [
+  { kind: 'juggle', ticks: 12 },
+  { kind: 'walk', ticks: 12 },
+  { kind: 'spin', ticks: 10 },
+  { kind: 'look', ticks: 8 },
+  { kind: 'hop', ticks: 8 },
+];
+let actIdx = 0;
+let actTick = 0;
+function advanceMascot() {
+  actTick++;
+  if (actTick >= IDLE_ACTS[actIdx].ticks) {
+    actTick = 0;
+    actIdx = (actIdx + 1) % IDLE_ACTS.length;
+  }
+}
+
+function chillPose(f) {
+  const act = IDLE_ACTS[actIdx].kind;
+  const t = actTick;
+  if (act === 'walk') {
+    const dxs = [0, 3, 6, 9, 12, 14, 12, 9, 6, 3, 0, 0];
+    return { grid: mascotGrid({ eyes: t < 6 ? 'right' : 'left' }), body: C.coral, bob: t % 2, dx: dxs[t % 12] };
+  }
+  if (act === 'spin') {
+    return { spinSpark: true, body: C.coral };
+  }
+  if (act === 'look') {
+    const dir = ['left', 'left', 'open', 'right', 'right', 'open', 'closed', 'open'][t % 8];
+    return { grid: mascotGrid({ eyes: dir }), body: C.coral, bob: t % 2 };
+  }
+  if (act === 'hop') {
+    const hops = [0, -4, -7, -8, -7, -4, 0, 0];
+    return { grid: mascotGrid({ eyes: 'open', mouth: 'smile' }), body: C.coral, bob: hops[t % 8] };
+  }
+  // juggle (default)
+  return { grid: mascotGrid({ eyes: t % 6 === 5 ? 'closed' : 'open' }), body: C.coral, bob: t % 2, ball: true };
+}
+
 const MASCOT_STATES = {
-  chill: (f) => ({ grid: mascotGrid({ eyes: f % 5 === 4 ? 'closed' : 'open' }), body: C.coral, bob: f % 2 }),
-  sleep: (f) => ({ grid: mascotGrid({ eyes: 'closed', mouth: 'o' }), body: C.coral, bob: 0, zzz: f % 2 }),
-  working: (f) => ({ grid: mascotGrid({ eyes: 'down', arms: f % 2 ? 'type-a' : 'type-b' }), body: C.coral, bob: 0 }),
+  chill: (f) => chillPose(f),
+  sleep: (f) => ({ grid: mascotGrid({ eyes: 'closed', mouth: 'o' }), body: C.coral, bob: f % 2 ? 1 : 0, zzz: f % 2 }),
+  working: (f) => ({ grid: mascotGrid({ eyes: 'down', arms: f % 2 ? 'type-a' : 'type-b' }), body: C.coral, bob: f % 2 }),
   alert: (f) => ({ grid: mascotGrid({ eyes: 'open', mouth: 'o', arms: 'up' }), body: C.coral, bob: f % 2 ? 2 : 0, bang: true }),
   panic: (f) => ({ grid: mascotGrid({ eyes: 'open', mouth: 'o', arms: 'up' }), body: C.red, bob: f % 2 ? 3 : 0, bang: true, sweat: f % 2 }),
 };
@@ -432,9 +477,16 @@ function mascotState() {
 }
 
 function mascotSvg(x, y, scale, state, frame) {
-  const { grid, body, bob = 0, zzz, bang, sweat } = MASCOT_STATES[state](frame);
+  const { grid, body, bob = 0, dx = 0, zzz, bang, sweat, ball, spinSpark } = MASCOT_STATES[state](frame);
+  if (spinSpark) {
+    const cx = x + 7 * scale;
+    const cy = y + 5.5 * scale;
+    const angle = (actTick * 40) % 360;
+    return `<g transform="rotate(${angle} ${cx} ${cy})">${spark(cx, cy, 5.8 * scale, body)}</g>`;
+  }
   const colors = { o: body, d: '#332017', w: '#BFDBFE' };
   const parts = [`<g>`];
+  x += dx;
   const yy = y + bob;
   grid.forEach((row, r) => {
     row.forEach((ch, c) => {
@@ -452,10 +504,10 @@ function mascotSvg(x, y, scale, state, frame) {
   if (bang) {
     parts.push(`<text x="${x + 15.5 * scale}" y="${yy + 4 * scale}" font-family="${SANS}" font-size="${scale * 5}" font-weight="900" fill="${body === C.red ? C.red : C.amber}">!</text>`);
   }
-  if (state === 'chill') {
+  if (ball) {
     // soccer ball juggle — foot, knee, head, knee
     const spots = [[15.6, 9.2], [16.2, 5.4], [14.6, 0.6], [16.2, 5.4]];
-    const [bc, br] = spots[frame % 4];
+    const [bc, br] = spots[actTick % 4];
     const bx = x + bc * scale;
     const by = yy + br * scale;
     const rr = scale * 1.35;
@@ -1148,12 +1200,13 @@ ws.on('open', () => {
     scanSessions();
     enrichSessionApps(renderAll);
   }, 15_000);
-  // mascot heartbeat — gentle 2-frame animation, state-driven
+  // mascot heartbeat — always in motion, cycling idle routines
   setInterval(() => {
     if (!contexts.size) return;
     mascotFrame++;
+    advanceMascot();
     renderAll();
-  }, 700);
+  }, 450);
 });
 
 ws.on('message', (buf) => {
