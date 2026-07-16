@@ -357,6 +357,11 @@ function duoInner(w) {
   if (w >= 760) {
     parts.push(spark(36, 50, 28, C.coral));
     parts.push(`<text x="74" y="60" font-family="${SERIF}" font-size="32" font-weight="700" fill="${C.cream}">Claude</text>`);
+    const waiting = waitingCount();
+    if (waiting) {
+      parts.push(`<circle cx="80" cy="79" r="4" fill="${C.amber}"/>`);
+      parts.push(`<text x="89" y="83" font-family="${SANS}" font-size="11" font-weight="700" fill="${C.amber}">${waiting} session${waiting > 1 ? 's' : ''} need${waiting > 1 ? '' : 's'} you</text>`);
+    }
     x0 = 196;
   }
   const uuids = Object.keys(ACCOUNTS);
@@ -383,6 +388,143 @@ function duoInner(w) {
 function duoSlice(sliceIndex, totalSlices) {
   const inner = duoInner(200 * totalSlices);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="${200 * sliceIndex} 0 200 100">${inner}</svg>`;
+}
+
+// ---------- Claude sessions board (swipe to page 2) ----------
+
+const SESSIONS_ACTION = 'com.fahim.claude-duo.sessions';
+const SESSIONS_ROOT = path.join(os.homedir(), '.claude', 'projects');
+const sessions = { list: [], scannedAt: 0 };
+let sessionScroll = 0;
+
+function lastJsonlEntry(file, size) {
+  try {
+    const fd = fs.openSync(file, 'r');
+    const len = Math.min(size, 16384);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, Math.max(0, size - len));
+    fs.closeSync(fd);
+    const lines = buf.toString('utf8').split('\n').filter((l) => l.trim());
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try { return JSON.parse(lines[i]); } catch {}
+    }
+  } catch {}
+  return null;
+}
+
+function scanSessions() {
+  let dirs = [];
+  try { dirs = fs.readdirSync(SESSIONS_ROOT); } catch { return; }
+  const cutoff = Date.now() - 6 * 3600_000;
+  const found = [];
+  for (const dir of dirs) {
+    let files = [];
+    try { files = fs.readdirSync(path.join(SESSIONS_ROOT, dir)); } catch { continue; }
+    for (const f of files) {
+      if (!f.endsWith('.jsonl')) continue;
+      const p = path.join(SESSIONS_ROOT, dir, f);
+      let st;
+      try { st = fs.statSync(p); } catch { continue; }
+      if (st.mtimeMs < cutoff || st.size < 2048) continue;
+      found.push({ p, mtimeMs: st.mtimeMs, size: st.size });
+    }
+  }
+  found.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const seen = new Set();
+  const list = [];
+  for (const s of found.slice(0, 12)) {
+    const entry = lastJsonlEntry(s.p, s.size) || {};
+    const cwd = entry.cwd || '';
+    const key = cwd || s.p;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const ageMs = Date.now() - s.mtimeMs;
+    let state = 'idle';
+    if (ageMs < 90_000) state = 'working';
+    else if (entry.type === 'assistant' && ageMs < 3 * 3600_000) state = 'waiting';
+    const name = (cwd ? path.basename(cwd) : 'session').slice(0, 22);
+    list.push({ name, cwd, state, ageMs });
+  }
+  const rank = { waiting: 0, working: 1, idle: 2 };
+  list.sort((a, b) => rank[a.state] - rank[b.state] || a.ageMs - b.ageMs);
+  sessions.list = list.slice(0, 9);
+  sessions.scannedAt = Date.now();
+}
+
+function waitingCount() {
+  return sessions.list.filter((s) => s.state === 'waiting').length;
+}
+
+function agoText(ms) {
+  const mins = Math.round(ms / 60000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+const SESSION_STYLE = {
+  working: { dot: '#4ADE80', text: (s) => `working · ${agoText(s.ageMs)}` },
+  waiting: { dot: C.amber, text: (s) => `needs you · ${agoText(s.ageMs)}` },
+  idle: { dot: '#6B6580', text: (s) => `idle · ${agoText(s.ageMs)}` },
+};
+
+const SESSION_ROWS_Y = [26, 50, 74];
+function sessionsInner(w) {
+  const parts = [];
+  parts.push(`<rect width="${w}" height="100" fill="${C.bg}"/>`);
+  parts.push(invader(10, 4, 1.6, C.coral));
+  parts.push(`<text x="34" y="17" font-family="${SERIF}" font-size="17" font-weight="700" fill="${C.cream}">Sessions</text>`);
+  const working = sessions.list.filter((s) => s.state === 'working').length;
+  const waiting = waitingCount();
+  const summary = waiting ? `${waiting} need you · ${working} working` : `${working} working`;
+  parts.push(`<text x="${w - 10}" y="16" text-anchor="end" font-family="${SANS}" font-size="11" font-weight="600" fill="${waiting ? C.amber : C.muted}">${esc(summary)}</text>`);
+
+  const visible = sessions.list.slice(sessionScroll, sessionScroll + 3);
+  if (!visible.length) {
+    parts.push(`<text x="${w / 2}" y="60" text-anchor="middle" font-family="${SANS}" font-size="12" fill="${C.muted}">No recent Claude sessions</text>`);
+  }
+  visible.forEach((s, i) => {
+    const y = SESSION_ROWS_Y[i];
+    const style = SESSION_STYLE[s.state];
+    parts.push(`<rect x="8" y="${y}" width="${w - 16}" height="21" rx="7" fill="${C.card}"/>`);
+    parts.push(`<circle cx="22" cy="${y + 10.5}" r="4.5" fill="${style.dot}"/>`);
+    parts.push(`<text x="34" y="${y + 15}" font-family="${SANS}" font-size="12" font-weight="700" fill="${C.cream}">${esc(s.name)}</text>`);
+    parts.push(`<text x="${w - 16}" y="${y + 15}" text-anchor="end" font-family="${SANS}" font-size="11" fill="${style.dot}">${esc(style.text(s))}</text>`);
+  });
+  if (sessions.list.length > sessionScroll + 3) {
+    parts.push(`<text x="${w / 2}" y="99" text-anchor="middle" font-family="${SANS}" font-size="9" fill="${C.muted}">twist for ${sessions.list.length - sessionScroll - 3} more</text>`);
+  }
+  return parts.join('');
+}
+
+function sessionsSlice(sliceIndex, totalSlices) {
+  const inner = sessionsInner(200 * totalSlices);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="${200 * sliceIndex} 0 200 100">${inner}</svg>`;
+}
+
+function sessionsKeySvg() {
+  const parts = [];
+  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">`);
+  parts.push(`<rect width="144" height="144" rx="14" fill="${C.bg}"/>`);
+  parts.push(invader(8, 6, 1.6, C.coral));
+  parts.push(`<text x="78" y="19" text-anchor="middle" font-family="${SERIF}" font-size="16" font-weight="700" fill="${C.cream}">Sessions</text>`);
+  const waiting = waitingCount();
+  const working = sessions.list.filter((s) => s.state === 'working').length;
+  parts.push(`<text x="72" y="78" text-anchor="middle" font-family="${SANS}" font-size="40" font-weight="800" fill="${waiting ? C.amber : C.cream}">${waiting || working}</text>`);
+  parts.push(`<text x="72" y="102" text-anchor="middle" font-family="${SANS}" font-size="11" fill="${C.muted}">${waiting ? 'need you' : 'working'}</text>`);
+  parts.push(`</svg>`);
+  return parts.join('');
+}
+
+// Tap a session row -> bring that project's Warp window to the front
+function focusSession(s) {
+  const name = (s.cwd ? path.basename(s.cwd) : '').replace(/["\\]/g, '');
+  execFile('/usr/bin/osascript', ['-e', 'tell application "Warp" to activate'], () => {
+    if (!name) return;
+    execFile('/usr/bin/osascript', ['-e',
+      `tell application "System Events" to tell process "Warp" to perform action "AXRaise" of (first window whose title contains "${name}")`,
+    ], () => {});
+  });
 }
 
 // ---------- Stream Deck wiring ----------
@@ -416,8 +558,20 @@ if (args.test !== undefined || process.argv.includes('--test') || process.argv.i
       fs.writeFileSync(path.join(dir, `test-key-${label}.png`), pngOf(renderSvg(uuid)));
     }
     const dir = path.join(__dirname, '..', 'logs');
+    if (process.argv.includes('--mock')) {
+      sessions.list = [
+        { name: 'miassist-studio', cwd: '/x/miassist-studio', state: 'waiting', ageMs: 14 * 60000 },
+        { name: 'homereel', cwd: '/x/homereel', state: 'working', ageMs: 30000 },
+        { name: 'lead-research', cwd: '/x/lead-research', state: 'working', ageMs: 120000 },
+        { name: 'crmboard', cwd: '/x/crmboard', state: 'idle', ageMs: 90 * 60000 },
+      ];
+    } else {
+      scanSessions();
+    }
     const duoSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="100">${duoInner(800)}</svg>`;
     fs.writeFileSync(path.join(dir, 'test-duo-800.png'), Buffer.from(svgToPngDataUri(duoSvg).split(',')[1], 'base64'));
+    const sesSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="100">${sessionsInner(800)}</svg>`;
+    fs.writeFileSync(path.join(dir, 'test-sessions-800.png'), Buffer.from(svgToPngDataUri(sesSvg).split(',')[1], 'base64'));
     console.log('pngs -> logs/ (exact device output)');
     process.exit(0);
   })();
@@ -439,8 +593,18 @@ function allEncoders() {
 function renderContext(context) {
   const info = contexts.get(context);
   if (!info) return;
+  if (info.action === SESSIONS_ACTION) {
+    if (info.controller === 'Encoder') {
+      const group = allEncoders().filter(([, i]) => i.action === SESSIONS_ACTION);
+      const idx = Math.max(0, group.findIndex(([ctx]) => ctx === context));
+      send({ event: 'setFeedback', context, payload: { canvas: svgToPngDataUri(sessionsSlice(idx, Math.max(1, group.length))) } });
+    } else {
+      send({ event: 'setImage', context, payload: { image: svgToPngDataUri(sessionsKeySvg()), target: 0 } });
+    }
+    return;
+  }
   if (info.controller === 'Encoder') {
-    const everyone = allEncoders();
+    const everyone = allEncoders().filter(([, i]) => i.action !== SESSIONS_ACTION);
     const distinct = new Set(everyone.map(([, i]) => i.action));
     const isAdjacent = (list) => list.every(([, i], idx) => idx === 0 || (i.column ?? 0) === (list[idx - 1][1].column ?? 0) + 1);
     let svg;
@@ -478,7 +642,7 @@ function renderAll() {
 
 async function fetchAll() {
   // sequential with a gap — bursts trip the endpoint's rate limit
-  const active = new Set([...contexts.values()].map((info) => info.action));
+  const active = new Set([...contexts.values()].map((info) => info.action).filter((a) => ACCOUNTS[a]));
   for (const uuid of active) {
     await fetchUsage(uuid);
     await new Promise((r) => setTimeout(r, 700));
@@ -492,6 +656,12 @@ ws.on('open', () => {
   setTimeout(fetchAll, 3000); // one staggered initial fetch after willAppears settle
   setInterval(fetchAll, FETCH_INTERVAL_MS);
   setInterval(renderAll, RENDER_INTERVAL_MS);
+  scanSessions();
+  setInterval(() => {
+    const before = JSON.stringify(sessions.list);
+    scanSessions();
+    if (JSON.stringify(sessions.list) !== before) renderAll();
+  }, 15_000);
 });
 
 ws.on('message', (buf) => {
@@ -512,11 +682,34 @@ ws.on('message', (buf) => {
       break;
     case 'keyDown':
     case 'touchTap':
-    case 'dialDown':
+    case 'dialDown': {
+      if (ev.action === SESSIONS_ACTION) {
+        if (ev.event === 'touchTap' && Array.isArray(ev.payload?.tapPos)) {
+          const info = contexts.get(ev.context);
+          const group = allEncoders().filter(([, i]) => i.action === SESSIONS_ACTION);
+          const sliceIdx = Math.max(0, group.findIndex(([ctx]) => ctx === ev.context));
+          const x = ev.payload.tapPos[0] + sliceIdx * 200;
+          const y = ev.payload.tapPos[1];
+          const row = SESSION_ROWS_Y.findIndex((ry) => y >= ry && y <= ry + 21);
+          const target = row >= 0 ? sessions.list[sessionScroll + row] : null;
+          if (target) { focusSession(target); break; }
+          void x; void info;
+        }
+        scanSessions();
+        renderAll();
+        break;
+      }
       send({ event: 'openUrl', payload: { url: 'https://claude.ai/settings/usage' } });
       break;
+    }
     case 'dialRotate':
-      adjustVolume(ev.payload?.ticks ?? 0);
+      if (ev.action === SESSIONS_ACTION) {
+        const max = Math.max(0, sessions.list.length - 3);
+        sessionScroll = Math.max(0, Math.min(max, sessionScroll + (ev.payload?.ticks > 0 ? 1 : -1)));
+        renderAll();
+      } else {
+        adjustVolume(ev.payload?.ticks ?? 0);
+      }
       break;
   }
 });

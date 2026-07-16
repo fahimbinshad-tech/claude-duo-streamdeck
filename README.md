@@ -20,6 +20,7 @@ Claude Code has 5-hour and weekly usage limits. Existing Stream Deck plugins sho
 - **Rate-limit friendly** — sequential polling with backoff; last good data is persisted so restarts never show a blank panel
 - **Dials control system volume** — the knobs under the strip stay useful
 - **Tap to open** [claude.ai usage settings](https://claude.ai/settings/usage)
+- **Sessions board** — swipe the touch bar to a second page showing your live Claude Code sessions (scanned from local `~/.claude/projects` transcripts): 🟢 working, 🟠 needs you, with a "N sessions need you" badge back on the usage page. **Tap a session to bring its terminal window to the front**, twist to scroll. No cloud, all local file mtimes.
 
 ## Install
 
