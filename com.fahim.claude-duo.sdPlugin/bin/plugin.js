@@ -526,6 +526,20 @@ const GREET_SETS = {
   day: ["Hey Fahim, how's it going?", 'what are we shipping?', 'locked in'],
   evening: ['evening, boss', 'golden hour grind', 'one more win today?'],
 };
+// the big serif wordmark itself rotates between the brand and personal hellos
+const HEADLINES = ['Claude', 'Hello, Fahim', 'Claude', "how's it going?", 'Claude', 'Hey, Fahim'];
+function headline() {
+  const h = new Date().getHours();
+  const pool = [...HEADLINES];
+  if (h < 5 || h >= 21) pool.push('Night Owl mode');
+  return pool[Math.floor(mascotFrame / 66) % pool.length]; // ~every 30s
+}
+function fitSerif(text, maxW, startSize, minSize) {
+  let s = startSize;
+  while (text.length * s * 0.52 > maxW && s > minSize) s--;
+  return s;
+}
+
 function greeting() {
   const h = new Date().getHours();
   const set = h < 5 ? GREET_SETS.night : h < 12 ? GREET_SETS.morning : h < 17 ? GREET_SETS.day : h < 21 ? GREET_SETS.evening : GREET_SETS.night;
@@ -774,16 +788,31 @@ function duoInner(w) {
   if (w >= 760) {
     const st = mascotState();
     parts.push(mascotSvg(8, 26, 3.6, st, mascotFrame));
-    parts.push(`<text x="88" y="48" font-family="${SERIF}" font-size="26" font-weight="700" fill="${C.cream}">Claude</text>`);
+    const head = headline();
+    const oneSize = fitSerif(head, 104, 26, 19);
+    let speechY = 70;
+    if (head.length * oneSize * 0.52 <= 104) {
+      parts.push(`<text x="88" y="48" font-family="${SERIF}" font-size="${oneSize}" font-weight="700" fill="${C.cream}">${esc(head)}</text>`);
+    } else {
+      // long hello -> stack it on two serif lines
+      let cut = head.indexOf(' ', Math.floor(head.length / 2) - 2);
+      if (cut < 1) cut = head.lastIndexOf(' ');
+      const l1 = head.slice(0, cut).trim();
+      const l2 = head.slice(cut).trim();
+      const size = Math.min(fitSerif(l1, 104, 21, 14), fitSerif(l2, 104, 21, 14));
+      parts.push(`<text x="88" y="40" font-family="${SERIF}" font-size="${size}" font-weight="700" fill="${C.cream}">${esc(l1)}</text>`);
+      parts.push(`<text x="88" y="61" font-family="${SERIF}" font-size="${size}" font-weight="700" fill="${C.cream}">${esc(l2)}</text>`);
+      speechY = 82;
+    }
     const waiting = waitingCount();
     const showBadge = waiting && Math.floor(mascotFrame / 18) % 2 === 0; // alternate badge <-> speech
     if (st === 'panic') {
-      parts.push(`<text x="89" y="70" font-family="${SANS}" font-size="11" font-weight="700" fill="${C.red}">limit close!</text>`);
+      parts.push(`<text x="89" y="${speechY}" font-family="${SANS}" font-size="11" font-weight="700" fill="${C.red}">limit close!</text>`);
     } else if (showBadge) {
-      parts.push(`<circle cx="93" cy="66" r="4" fill="${C.amber}"/>`);
-      parts.push(`<text x="101" y="70" font-family="${SANS}" font-size="11" font-weight="700" fill="${C.amber}">${waiting} need${waiting > 1 ? '' : 's'} you</text>`);
+      parts.push(`<circle cx="93" cy="${speechY - 4}" r="4" fill="${C.amber}"/>`);
+      parts.push(`<text x="101" y="${speechY}" font-family="${SANS}" font-size="11" font-weight="700" fill="${C.amber}">${waiting} need${waiting > 1 ? '' : 's'} you</text>`);
     } else {
-      parts.push(`<text x="89" y="70" font-family="${SANS}" font-size="11.5" fill="${C.muted}">${esc(speech())}</text>`);
+      parts.push(`<text x="89" y="${speechY}" font-family="${SANS}" font-size="11.5" fill="${C.muted}">${esc(speech())}</text>`);
     }
     x0 = 196;
   }
