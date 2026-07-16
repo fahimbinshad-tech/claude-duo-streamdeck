@@ -213,8 +213,11 @@ function spark(cx, cy, r, color) {
   return parts.join('');
 }
 
+function pillWidth(text, fontSize) {
+  return Math.round(text.length * fontSize * 0.62) + 14;
+}
 function pill(xRight, yTop, text, fontSize) {
-  const w = Math.round(text.length * fontSize * 0.62) + 14;
+  const w = pillWidth(text, fontSize);
   const h = fontSize + 8;
   const x = xRight - w;
   return (
@@ -235,7 +238,12 @@ function card(m, label, x, y, w, h, opts = {}) {
   const subSize = opts.subSize ?? 10;
   const parts = [];
   parts.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="9" fill="${C.card}"/>`);
-  parts.push(`<text x="${x + pad}" y="${y + pad + pctSize * 0.78}" font-family="${SANS}" font-size="${pctSize}" font-weight="800" fill="${C.cream}">${pct}%</text>`);
+  // auto-shrink the % so it can never collide with the pill
+  const pctText = `${pct}%`;
+  const avail = w - pad * 2 - pillWidth(label, pillSize) - 5;
+  let size = pctSize;
+  while (pctText.length * size * 0.62 > avail && size > 12) size -= 1;
+  parts.push(`<text x="${x + pad}" y="${y + pad + pctSize * 0.78}" font-family="${SANS}" font-size="${size}" font-weight="800" fill="${C.cream}">${esc(pctText)}</text>`);
   parts.push(pill(x + w - pad, y + pad + 1, label, pillSize));
   const barY = y + pad + pctSize * 0.78 + 9;
   const barW = w - pad * 2;
@@ -414,15 +422,21 @@ function renderContext(context) {
   if (info.controller === 'Encoder') {
     const everyone = allEncoders();
     const distinct = new Set(everyone.map(([, i]) => i.action));
+    const isAdjacent = (list) => list.every(([, i], idx) => idx === 0 || (i.column ?? 0) === (list[idx - 1][1].column ?? 0) + 1);
     let svg;
-    if (distinct.size >= 2) {
-      // both accounts on the bar -> one unified dashboard across every slot
+    if (distinct.size >= 2 && everyone.length >= 3 && isAdjacent(everyone)) {
+      // both accounts filling adjacent slots -> one unified dashboard
       const idx = Math.max(0, everyone.findIndex(([ctx]) => ctx === context));
-      svg = duoSlice(idx, Math.max(1, everyone.length));
+      svg = duoSlice(idx, everyone.length);
     } else {
+      // stitch only same-account ADJACENT runs; anything else renders compact
       const group = everyone.filter(([, i]) => i.action === info.action);
-      const idx = Math.max(0, group.findIndex(([ctx]) => ctx === context));
-      svg = stripSlice(info.action, idx, Math.max(1, group.length));
+      if (group.length >= 2 && isAdjacent(group)) {
+        const idx = Math.max(0, group.findIndex(([ctx]) => ctx === context));
+        svg = stripSlice(info.action, idx, group.length);
+      } else {
+        svg = stripSlice(info.action, 0, 1);
+      }
     }
     send({
       event: 'setFeedback',
