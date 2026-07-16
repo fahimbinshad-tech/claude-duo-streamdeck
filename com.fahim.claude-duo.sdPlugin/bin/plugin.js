@@ -487,21 +487,18 @@ function duoSlice(sliceIndex, totalSlices) {
 // ---------- Claude sessions board (swipe to page 2) ----------
 
 const SESSIONS_ACTION = 'com.fahim.claude-duo.sessions';
-// both accounts share one transcripts dir (~/.claude2/projects is a symlink),
-// so account attribution comes from claude2's per-project lastSessionId records
-const SESSIONS_DIR = path.join(os.homedir(), '.claude', 'projects');
-const CLAUDE2_CONFIG = path.join(os.homedir(), '.claude2', '.claude.json');
+// Claude Code maintains a LIVE session registry per account config dir:
+// ~/.claude/sessions/<pid>.json with the session's name (same one shown in
+// the terminal), real status (busy/idle), cwd, pid, and the claude.ai
+// bridgeSessionId for exact-chat deep links.
+const SESSION_REGISTRIES = [
+  { dir: path.join(os.homedir(), '.claude', 'sessions'), src: 'personal' },
+  { dir: path.join(os.homedir(), '.claude2', 'sessions'), src: 'business' },
+];
 const ACCOUNT_COLORS = { personal: '#60A5FA', business: '#F472B6' };
 
-function claude2SessionIds() {
-  const ids = new Set();
-  try {
-    const cfg = JSON.parse(fs.readFileSync(CLAUDE2_CONFIG, 'utf8'));
-    for (const proj of Object.values(cfg.projects || {})) {
-      if (proj && proj.lastSessionId) ids.add(proj.lastSessionId);
-    }
-  } catch {}
-  return ids;
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
 }
 const sessions = { list: [], scannedAt: 0 };
 let sessionSel = 0;
@@ -566,50 +563,33 @@ function humanText(entry) {
 }
 
 function scanSessions() {
-  const cutoff = Date.now() - 6 * 3600_000;
-  const found = [];
-  let dirs = [];
-  try { dirs = fs.readdirSync(SESSIONS_DIR); } catch { return; }
-  for (const dir of dirs) {
-    if (/claude-mem|observer-sessions/.test(dir)) continue; // daemon noise
+  const list = [];
+  for (const { dir, src } of SESSION_REGISTRIES) {
     let files = [];
-    try { files = fs.readdirSync(path.join(SESSIONS_DIR, dir)); } catch { continue; }
+    try { files = fs.readdirSync(dir); } catch { continue; }
     for (const f of files) {
-      if (!f.endsWith('.jsonl')) continue;
-      const p = path.join(SESSIONS_DIR, dir, f);
-      let st;
-      try { st = fs.statSync(p); } catch { continue; }
-      if (st.mtimeMs < cutoff || st.size < 2048) continue;
-      found.push({ p, id: f.replace(/\.jsonl$/, ''), mtimeMs: st.mtimeMs, size: st.size });
+      if (!f.endsWith('.json')) continue;
+      let j;
+      try { j = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch { continue; }
+      if (j.kind !== 'interactive' || !j.pid || !pidAlive(j.pid)) continue;
+      if (/observer|salvage|watchdog/i.test(j.name || '')) continue; // daemons
+      const status = j.status || 'idle';
+      const state = status === 'busy' ? 'working' : status === 'idle' ? 'waiting' : status;
+      const ageMs = Math.max(0, Date.now() - (j.statusUpdatedAt || j.updatedAt || Date.now()));
+      const home = os.homedir();
+      list.push({
+        name: (j.name || 'session').slice(0, 34),
+        folder: j.cwd && j.cwd !== home ? path.basename(j.cwd).slice(0, 14) : '',
+        cwd: j.cwd || '',
+        pid: j.pid,
+        bridge: j.bridgeSessionId || null,
+        state, ageMs, src,
+      });
     }
   }
-  found.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  const claude2Ids = claude2SessionIds();
-  const seen = new Set();
-  const list = [];
-  for (const s of found.slice(0, 18)) {
-    const { last, title, launchCwd, cwd } = inspectSession(s.p, s.size);
-    const entry = last || {};
-    // daemon/observer noise, not real chats
-    if (/\/\.claude|observer-sessions/.test(cwd)) continue;
-    const key = cwd || s.p;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const ageMs = Date.now() - s.mtimeMs;
-    let state = 'idle';
-    if (ageMs < 90_000) state = 'working';
-    else if (entry.type === 'assistant' && ageMs < 3 * 3600_000) state = 'waiting';
-    const home = os.homedir();
-    const folder = cwd && cwd !== home ? path.basename(cwd) : '~';
-    const name = (title || folder).slice(0, 34);
-    const src = claude2Ids.has(s.id) ? 'business' : 'personal';
-    list.push({ name, folder: title ? folder.slice(0, 14) : '', cwd, launchCwd, state, ageMs, src });
-  }
   const rank = { waiting: 0, working: 1 };
-  // live sessions only — working or waiting; stale/idle ones don't make the board
   sessions.list = list
-    .filter((s) => s.state !== 'idle')
-    .sort((a, b) => rank[a.state] - rank[b.state] || a.ageMs - b.ageMs)
+    .sort((a, b) => (rank[a.state] ?? 2) - (rank[b.state] ?? 2) || a.ageMs - b.ageMs)
     .slice(0, 12);
   sessions.scannedAt = Date.now();
   sessionSel = Math.max(0, Math.min(sessionSel, sessions.list.length - 1));
@@ -725,60 +705,49 @@ const HOST_APPS = [
   ['/Visual Studio Code.app/', 'com.microsoft.VSCode', 'VS Code'],
 ];
 
+// Each registry entry has the session's PID — walk its parent chain to find
+// the GUI app hosting it. No cwd guessing.
 function enrichSessionApps(done) {
+  if (!sessions.list.length) return done && done();
   execFile('/bin/ps', ['-axo', 'pid=,ppid=,command='], { maxBuffer: 8 * 1024 * 1024 }, (err, out) => {
     if (err || !out) return done && done();
     const table = {};
-    const candidates = [];
     for (const line of out.split('\n')) {
       const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
-      if (!m) continue;
-      table[+m[1]] = { ppid: +m[2], cmd: m[3] };
-      if (/(^|\/)claude(\s|$)/.test(m[3]) && !m[3].includes('claude-duo')) candidates.push(+m[1]);
+      if (m) table[+m[1]] = { ppid: +m[2], cmd: m[3] };
     }
-    if (!candidates.length) return done && done();
-    execFile('/usr/sbin/lsof', ['-a', '-p', candidates.join(','), '-d', 'cwd', '-Fn'], { maxBuffer: 2 * 1024 * 1024 }, (e2, out2) => {
-      const cwdByPid = {};
-      let cur = null;
-      for (const line of (out2 || '').split('\n')) {
-        if (line[0] === 'p') cur = +line.slice(1);
-        else if (line[0] === 'n' && cur) cwdByPid[cur] = line.slice(1);
-      }
-      const ancestorApp = (pid) => {
-        let p = pid, hops = 0;
-        while (p && p > 1 && hops++ < 25) {
-          const row = table[p];
-          if (!row) break;
-          for (const [needle, bundle, name] of HOST_APPS) {
-            if (row.cmd.includes(needle)) return { bundle, name };
-          }
-          p = row.ppid;
+    const ancestorApp = (pid) => {
+      let p = pid, hops = 0;
+      while (p && p > 1 && hops++ < 25) {
+        const row = table[p];
+        if (!row) break;
+        for (const [needle, bundle, name] of HOST_APPS) {
+          if (row.cmd.includes(needle)) return { bundle, name };
         }
-        return null;
-      };
-      for (const s of sessions.list) {
-        for (const pid of candidates) {
-          const pcwd = cwdByPid[pid];
-          if (!pcwd) continue;
-          if (pcwd === s.launchCwd || pcwd === s.cwd) {
-            const app = ancestorApp(pid);
-            if (app) { s.bundle = app.bundle; s.appName = app.name; }
-            break;
-          }
-        }
+        p = row.ppid;
       }
-      done && done();
-    });
+      return null;
+    };
+    for (const s of sessions.list) {
+      const app = s.pid ? ancestorApp(s.pid) : null;
+      if (app) { s.bundle = app.bundle; s.appName = app.name; }
+    }
+    done && done();
   });
 }
 
-// Tap/press -> open the app actually hosting that session, then try to raise
-// the matching window (best-effort; logs why if macOS blocks it)
+// Tap/press -> open the EXACT chat on claude.ai (remote-controlled live view
+// of the session). Falls back to raising the hosting app when no bridge id.
 function focusSession(s) {
+  if (s.bridge) {
+    log(`focus: "${s.name}" -> https://claude.ai/code/${s.bridge}`);
+    execFile('/usr/bin/open', [`https://claude.ai/code/${s.bridge}`], (e) => { if (e) log('open url failed:', e.message); });
+    return;
+  }
   const bundle = s.bundle || 'dev.warp.Warp-Stable';
   log(`focus: "${s.name}" app=${s.appName || 'default(Warp)'} bundle=${bundle}`);
   execFile('/usr/bin/open', ['-b', bundle], (e) => { if (e) log('open -b failed:', e.message); });
-  const needle = (s.launchCwd || s.cwd ? path.basename(s.launchCwd || s.cwd) : '').replace(/["\\]/g, '');
+  const needle = (s.cwd ? path.basename(s.cwd) : '').replace(/["\\]/g, '');
   if (!needle || needle === os.homedir().split('/').pop()) return;
   execFile('/usr/bin/osascript', ['-e',
     `tell application "System Events" to tell (first process whose bundle identifier is "${bundle}") to perform action "AXRaise" of (first window whose title contains "${needle}")`,
@@ -818,10 +787,9 @@ if (args.test !== undefined || process.argv.includes('--test') || process.argv.i
     const dir = path.join(__dirname, '..', 'logs');
     if (process.argv.includes('--mock')) {
       sessions.list = [
-        { name: 'Fix quiz funnel lead routing', folder: 'miassist-studio', cwd: '/x/miassist-studio', state: 'waiting', ageMs: 14 * 60000, src: 'personal' },
-        { name: 'HomeReel iOS release checklist', folder: 'homereel', cwd: '/x/homereel', state: 'working', ageMs: 30000, src: 'business' },
-        { name: 'Scrape CRE leads from Galt post', folder: 'lead-research', cwd: '/x/lead-research', state: 'working', ageMs: 120000, src: 'personal' },
-        { name: 'CRM board deploy fix', folder: 'crmboard', cwd: '/x/crmboard', state: 'idle', ageMs: 90 * 60000, src: 'business' },
+        { name: 'fahimshad-57', folder: 'miassist-studio', cwd: '/x/miassist-studio', state: 'waiting', ageMs: 14 * 60000, src: 'personal', bridge: 'session_x' },
+        { name: 'fahimshad-7e', folder: 'homereel', cwd: '/x/homereel', state: 'working', ageMs: 30000, src: 'business', bridge: 'session_y' },
+        { name: 'fahimshad-69', folder: 'lead-research', cwd: '/x/lead-research', state: 'working', ageMs: 120000, src: 'personal', bridge: 'session_z' },
       ];
     } else {
       scanSessions();
