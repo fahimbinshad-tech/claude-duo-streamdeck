@@ -570,7 +570,7 @@ const ACT_QUIPS = {
   type: ['agents cooking', 'tokens flying', 'deep work mode'],
   stretch: ['brb, stretching', 'posture check'],
   wave: ['hey Fahim', 'yo, boss', 'sup Fahim'],
-  punt: ['bye, Codex', 'get punted', 'not on my deck'],
+  punt: ['bye, ChatGPT', 'get punted', 'not on my deck'],
 };
 function speech() {
   const bucket = Math.floor(mascotFrame / 18); // new line ~every 8s
@@ -627,22 +627,17 @@ function mascotSvg(x, y, scale, state, frame) {
     parts.push(`<text x="${x + 15.5 * scale}" y="${yy + 4 * scale}" font-family="${SANS}" font-size="${scale * 5}" font-weight="900" fill="${body === C.red ? C.red : C.amber}">!</text>`);
   }
   if (codex !== undefined) {
-    // trajectory: slide in from the right, get kicked, fly off the top
+    // ChatGPT blossom gets kicked like a ball: slide in, boot, fly off spinning
     const traj = [
-      [30, 9], [26, 9], [22, 9], [18.5, 9],       // sliding in
-      [18, 7], [20, 3.5], [22.5, 0], [25, -3.5],  // launched
-      [27.5, -7], [30, -10], [32, -13], [34, -16],
+      [28, 8], [24.5, 8], [21, 8], [18.5, 8],     // rolling in
+      [18, 6.5], [20, 3], [22.5, -0.5], [25, -4], // launched
+      [27.5, -7.5], [30, -11], [32, -14], [34, -17],
     ];
     const [cxg, cyg] = traj[Math.min(codex, traj.length - 1)];
     const bx = x + cxg * scale;
     const by = yy + cyg * scale;
-    const bw = 6.4 * scale;
-    const bh = 3.2 * scale;
-    const rot = codex > 3 ? (codex - 3) * 38 : 0;
-    parts.push(`<g transform="rotate(${rot} ${bx + bw / 2} ${by + bh / 2})">` +
-      `<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="${bh / 2}" fill="#ECECEC"/>` +
-      `<text x="${bx + bw / 2}" y="${by + bh * 0.72}" text-anchor="middle" font-family="${SANS}" font-size="${(bh * 0.62).toFixed(1)}" font-weight="700" fill="#111111">codex</text>` +
-      `</g>`);
+    const rot = codex > 3 ? (codex - 3) * 40 : codex * 15;
+    parts.push(chatgptLogo(bx, by, 2.7 * scale, rot));
   }
   if (ball) {
     // soccer ball juggle — foot, knee, header, knee
@@ -654,6 +649,18 @@ function mascotSvg(x, y, scale, state, frame) {
     parts.push(`<circle cx="${bx}" cy="${by}" r="${rr}" fill="#F5F0E5" stroke="#332017" stroke-width="1"/>`);
     parts.push(`<circle cx="${bx}" cy="${by}" r="${rr * 0.38}" fill="#332017"/>`);
   }
+  parts.push('</g>');
+  return parts.join('');
+}
+
+// ChatGPT blossom (six-petal knot), white disc + dark petals — the "ball"
+function chatgptLogo(cx, cy, r, rot = 0) {
+  const parts = [`<g transform="rotate(${rot} ${cx} ${cy})">`];
+  parts.push(`<circle cx="${cx}" cy="${cy}" r="${r}" fill="#F4F4F4"/>`);
+  for (let i = 0; i < 6; i++) {
+    parts.push(`<ellipse cx="${cx}" cy="${cy - r * 0.46}" rx="${r * 0.21}" ry="${r * 0.5}" fill="#111111" transform="rotate(${i * 60} ${cx} ${cy})"/>`);
+  }
+  parts.push(`<circle cx="${cx}" cy="${cy}" r="${r * 0.26}" fill="#F4F4F4"/>`);
   parts.push('</g>');
   return parts.join('');
 }
