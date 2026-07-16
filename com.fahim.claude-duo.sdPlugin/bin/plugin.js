@@ -347,6 +347,18 @@ function skillsSlice(sliceIndex, totalSlices) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="${200 * sliceIndex} 0 200 100">${inner}</svg>`;
 }
 
+// Tap on the usage strip -> that account's usage page, in ITS Chrome profile
+function openUsage(src) {
+  const acct = ACCOUNTS[`com.fahim.claude-duo.${src}`] || {};
+  const url = 'https://claude.ai/settings/usage';
+  log(`open usage: ${src} chromeProfile=${acct.chromeProfile || 'default browser'}`);
+  if (acct.chromeProfile) {
+    execFile('/usr/bin/open', ['-na', 'Google Chrome', '--args', `--profile-directory=${acct.chromeProfile}`, url], (e) => { if (e) log('chrome open failed:', e.message); });
+  } else {
+    execFile('/usr/bin/open', [url], (e) => { if (e) log('open url failed:', e.message); });
+  }
+}
+
 // Press a knob on the usage page -> brand-new Claude terminal for that side
 function launchClaude(src) {
   const isBiz = src === 'business';
@@ -1416,7 +1428,16 @@ ws.on('message', (buf) => {
         launchClaude(col >= 2 ? 'business' : 'personal');
         break;
       }
-      send({ event: 'openUrl', payload: { url: 'https://claude.ai/settings/usage' } });
+      if (ev.event === 'touchTap' && Array.isArray(ev.payload?.tapPos)) {
+        // route by which HALF of the dashboard was touched (personal cards
+        // span up to x≈498 in the 800px duo layout)
+        const col = contexts.get(ev.context)?.column ?? 0;
+        const absX = col * 200 + ev.payload.tapPos[0];
+        openUsage(absX < 498 ? 'personal' : 'business');
+        break;
+      }
+      // keypad buttons: the action itself names the account
+      openUsage(ev.action === 'com.fahim.claude-duo.business' ? 'business' : 'personal');
       break;
     }
     case 'dialRotate':
