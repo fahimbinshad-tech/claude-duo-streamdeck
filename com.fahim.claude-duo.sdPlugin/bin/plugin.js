@@ -393,57 +393,106 @@ function duoSlice(sliceIndex, totalSlices) {
 // ---------- Claude sessions board (swipe to page 2) ----------
 
 const SESSIONS_ACTION = 'com.fahim.claude-duo.sessions';
-// each account writes transcripts under its own config dir — that's how rows
-// get per-account colors
-const SESSION_ROOTS = [
-  { root: path.join(os.homedir(), '.claude', 'projects'), src: 'personal' },
-  { root: path.join(os.homedir(), '.claude2', 'projects'), src: 'business' },
-];
-const ACCOUNT_COLORS = { personal: '#60A5FA', business: '#C084FC' };
+// both accounts share one transcripts dir (~/.claude2/projects is a symlink),
+// so account attribution comes from claude2's per-project lastSessionId records
+const SESSIONS_DIR = path.join(os.homedir(), '.claude', 'projects');
+const CLAUDE2_CONFIG = path.join(os.homedir(), '.claude2', '.claude.json');
+const ACCOUNT_COLORS = { personal: '#60A5FA', business: '#F472B6' };
+
+function claude2SessionIds() {
+  const ids = new Set();
+  try {
+    const cfg = JSON.parse(fs.readFileSync(CLAUDE2_CONFIG, 'utf8'));
+    for (const proj of Object.values(cfg.projects || {})) {
+      if (proj && proj.lastSessionId) ids.add(proj.lastSessionId);
+    }
+  } catch {}
+  return ids;
+}
 const sessions = { list: [], scannedAt: 0 };
 let sessionSel = 0;
 
-function lastJsonlEntry(file, size) {
+function readChunk(file, start, len) {
   try {
     const fd = fs.openSync(file, 'r');
-    const len = Math.min(size, 16384);
     const buf = Buffer.alloc(len);
-    fs.readSync(fd, buf, 0, len, Math.max(0, size - len));
+    const read = fs.readSync(fd, buf, 0, len, start);
     fs.closeSync(fd);
-    const lines = buf.toString('utf8').split('\n').filter((l) => l.trim());
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try { return JSON.parse(lines[i]); } catch {}
+    return buf.toString('utf8', 0, read);
+  } catch { return ''; }
+}
+
+function parseLines(text) {
+  const out = [];
+  for (const l of text.split('\n')) {
+    if (!l.trim()) continue;
+    try { out.push(JSON.parse(l)); } catch {}
+  }
+  return out;
+}
+
+// last entry (for state/cwd) + chat title (from "summary" entries, like the
+// name shown in claude --resume / the phone app)
+function inspectSession(file, size) {
+  const tail = parseLines(readChunk(file, Math.max(0, size - 16384), Math.min(size, 16384)));
+  const head = size > 16384 ? parseLines(readChunk(file, 0, 8192)) : [];
+  const last = tail.length ? tail[tail.length - 1] : null;
+  let title = null;
+  for (const e of [...head, ...tail]) {
+    if (e.type === 'summary' && typeof e.summary === 'string') title = e.summary;
+  }
+  if (!title) {
+    for (const e of [...head, ...tail]) {
+      const t = humanText(e);
+      if (t) { title = t; break; }
     }
-  } catch {}
-  return null;
+  }
+  return { last, title };
+}
+
+// first real human message — skips system-reminders, command tags, sidechains
+function humanText(entry) {
+  if (!entry || entry.type !== 'user' || entry.isSidechain || entry.isMeta) return '';
+  const content = entry.message?.content;
+  let text = typeof content === 'string' ? content : Array.isArray(content) ? (content.find((c) => c.type === 'text')?.text || '') : '';
+  if (!text) return '';
+  text = text
+    .replace(/<[a-z-]+>[\s\S]*?<\/[a-z-]+>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/^Caveat:.*$/gm, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length >= 4 ? text : '';
 }
 
 function scanSessions() {
   const cutoff = Date.now() - 6 * 3600_000;
   const found = [];
-  for (const { root, src } of SESSION_ROOTS) {
-    let dirs = [];
-    try { dirs = fs.readdirSync(root); } catch { continue; }
-    for (const dir of dirs) {
-      let files = [];
-      try { files = fs.readdirSync(path.join(root, dir)); } catch { continue; }
-      for (const f of files) {
-        if (!f.endsWith('.jsonl')) continue;
-        const p = path.join(root, dir, f);
-        let st;
-        try { st = fs.statSync(p); } catch { continue; }
-        if (st.mtimeMs < cutoff || st.size < 2048) continue;
-        found.push({ p, mtimeMs: st.mtimeMs, size: st.size, src });
-      }
+  let dirs = [];
+  try { dirs = fs.readdirSync(SESSIONS_DIR); } catch { return; }
+  for (const dir of dirs) {
+    let files = [];
+    try { files = fs.readdirSync(path.join(SESSIONS_DIR, dir)); } catch { continue; }
+    for (const f of files) {
+      if (!f.endsWith('.jsonl')) continue;
+      const p = path.join(SESSIONS_DIR, dir, f);
+      let st;
+      try { st = fs.statSync(p); } catch { continue; }
+      if (st.mtimeMs < cutoff || st.size < 2048) continue;
+      found.push({ p, id: f.replace(/\.jsonl$/, ''), mtimeMs: st.mtimeMs, size: st.size });
     }
   }
   found.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const claude2Ids = claude2SessionIds();
   const seen = new Set();
   const list = [];
-  for (const s of found.slice(0, 14)) {
-    const entry = lastJsonlEntry(s.p, s.size) || {};
+  for (const s of found.slice(0, 18)) {
+    const { last, title } = inspectSession(s.p, s.size);
+    const entry = last || {};
     const cwd = entry.cwd || '';
-    const key = (cwd || s.p) + s.src;
+    // daemon/observer noise, not real chats
+    if (/\/\.claude|observer-sessions/.test(cwd)) continue;
+    const key = cwd || s.p;
     if (seen.has(key)) continue;
     seen.add(key);
     const ageMs = Date.now() - s.mtimeMs;
@@ -451,12 +500,17 @@ function scanSessions() {
     if (ageMs < 90_000) state = 'working';
     else if (entry.type === 'assistant' && ageMs < 3 * 3600_000) state = 'waiting';
     const home = os.homedir();
-    const name = (cwd && cwd !== home ? path.basename(cwd) : '~ home').slice(0, 24);
-    list.push({ name, cwd, state, ageMs, src: s.src });
+    const folder = cwd && cwd !== home ? path.basename(cwd) : '~';
+    const name = (title || folder).slice(0, 34);
+    const src = claude2Ids.has(s.id) ? 'business' : 'personal';
+    list.push({ name, folder: title ? folder.slice(0, 14) : '', cwd, state, ageMs, src });
   }
-  const rank = { waiting: 0, working: 1, idle: 2 };
-  list.sort((a, b) => rank[a.state] - rank[b.state] || a.ageMs - b.ageMs);
-  sessions.list = list.slice(0, 9);
+  const rank = { waiting: 0, working: 1 };
+  // live sessions only — working or waiting; stale/idle ones don't make the board
+  sessions.list = list
+    .filter((s) => s.state !== 'idle')
+    .sort((a, b) => rank[a.state] - rank[b.state] || a.ageMs - b.ageMs)
+    .slice(0, 12);
   sessions.scannedAt = Date.now();
   sessionSel = Math.max(0, Math.min(sessionSel, sessions.list.length - 1));
 }
@@ -478,39 +532,63 @@ const SESSION_STYLE = {
   idle: { dot: '#6B6580', text: (s) => `idle · ${agoText(s.ageMs)}` },
 };
 
-const SESSION_ROWS = [{ y: 25, h: 35 }, { y: 63, h: 35 }];
-function sessionWindowStart() {
-  return Math.max(0, Math.min(sessionSel - 1, sessions.list.length - 2));
+// Card grid: one block per touch-strip slot, dial scrolls pages, press opens
+const CARD_TOP = 21;
+const CARD_H = 76;
+const CARD_MARGIN = 6;
+function cardGeometry(w) {
+  const n = Math.max(1, Math.round(w / 200));
+  const cardW = (w - CARD_MARGIN * (n + 1)) / n;
+  return { n, cardW };
+}
+function wrapTwo(text, perLine) {
+  if (text.length <= perLine) return [text];
+  let cut = text.lastIndexOf(' ', perLine);
+  if (cut < perLine * 0.5) cut = perLine;
+  const line1 = text.slice(0, cut).trim();
+  let line2 = text.slice(cut).trim();
+  if (line2.length > perLine) line2 = line2.slice(0, perLine - 1) + '…';
+  return [line1, line2];
 }
 function sessionsInner(w) {
   const parts = [];
   parts.push(`<rect width="${w}" height="100" fill="${C.bg}"/>`);
-  parts.push(invader(10, 3, 1.5, C.coral));
-  parts.push(`<text x="32" y="17" font-family="${SERIF}" font-size="16" font-weight="700" fill="${C.cream}">Sessions</text>`);
+  parts.push(invader(8, 2, 1.3, C.coral));
+  parts.push(`<text x="28" y="15" font-family="${SERIF}" font-size="14" font-weight="700" fill="${C.cream}">Live Sessions</text>`);
   const working = sessions.list.filter((s) => s.state === 'working').length;
   const waiting = waitingCount();
-  const summary = `${sessions.list.length} total${waiting ? ` · ${waiting} need you` : ''} · ${working} working`;
-  parts.push(`<text x="${w - 12}" y="16" text-anchor="end" font-family="${SANS}" font-size="12" font-weight="600" fill="${waiting ? C.amber : C.muted}">${esc(summary)}</text>`);
+  const summary = waiting ? `${waiting} need you · ${working} working` : `${working} working`;
+  parts.push(`<text x="${w - 10}" y="14" text-anchor="end" font-family="${SANS}" font-size="11" font-weight="600" fill="${waiting ? C.amber : C.muted}">${esc(summary)}</text>`);
 
-  const start = sessionWindowStart();
-  const visible = sessions.list.slice(start, start + 2);
-  if (!visible.length) {
-    parts.push(`<text x="${w / 2}" y="62" text-anchor="middle" font-family="${SANS}" font-size="14" fill="${C.muted}">No recent Claude sessions</text>`);
+  if (!sessions.list.length) {
+    parts.push(`<text x="${w / 2}" y="62" text-anchor="middle" font-family="${SANS}" font-size="14" fill="${C.muted}">All quiet — no live sessions</text>`);
+    return parts.join('');
   }
+
+  const { n, cardW } = cardGeometry(w);
+  const pageStart = Math.floor(sessionSel / n) * n;
+  const visible = sessions.list.slice(pageStart, pageStart + n);
+  const perLine = Math.max(10, Math.floor((cardW - 22) / 7.4));
+
   visible.forEach((s, i) => {
-    const { y, h } = SESSION_ROWS[i];
+    const x = CARD_MARGIN + i * (cardW + CARD_MARGIN);
     const style = SESSION_STYLE[s.state];
     const acctColor = ACCOUNT_COLORS[s.src] || C.muted;
-    const selected = start + i === sessionSel;
-    parts.push(`<rect x="8" y="${y}" width="${w - 16}" height="${h}" rx="10" fill="${selected ? '#332D49' : C.card}"${selected ? ` stroke="${acctColor}" stroke-width="2"` : ''}/>`);
-    parts.push(`<rect x="8" y="${y}" width="6" height="${h}" rx="3" fill="${acctColor}"/>`);
-    parts.push(`<circle cx="30" cy="${y + h / 2}" r="7" fill="${style.dot}"/>`);
-    parts.push(`<text x="46" y="${y + h / 2 + 6}" font-family="${SANS}" font-size="17" font-weight="700" fill="${selected ? '#FFFFFF' : C.cream}">${esc(s.name)}</text>`);
-    parts.push(`<text x="${w - 18}" y="${y + h / 2 + 5}" text-anchor="end" font-family="${SANS}" font-size="13" font-weight="600" fill="${style.dot}">${esc(style.text(s))}</text>`);
-    if (selected) {
-      parts.push(`<text x="${w - 18 - 150}" y="${y + h / 2 + 5}" text-anchor="end" font-family="${SANS}" font-size="11" fill="${C.muted}">press dial ↵</text>`);
-    }
+    const selected = pageStart + i === sessionSel;
+    parts.push(`<rect x="${x}" y="${CARD_TOP}" width="${cardW}" height="${CARD_H}" rx="10" fill="${selected ? '#343048' : C.card}"${selected ? ` stroke="${acctColor}" stroke-width="2.5"` : ''}/>`);
+    parts.push(`<rect x="${x}" y="${CARD_TOP}" width="6" height="${CARD_H}" rx="3" fill="${acctColor}"/>`);
+    const lines = wrapTwo(s.name, perLine);
+    parts.push(`<text x="${x + 15}" y="${CARD_TOP + 24}" font-family="${SANS}" font-size="14" font-weight="700" fill="${selected ? '#FFFFFF' : C.cream}">${esc(lines[0])}</text>`);
+    if (lines[1]) parts.push(`<text x="${x + 15}" y="${CARD_TOP + 41}" font-family="${SANS}" font-size="14" font-weight="700" fill="${selected ? '#FFFFFF' : C.cream}">${esc(lines[1])}</text>`);
+    parts.push(`<circle cx="${x + 20}" cy="${CARD_TOP + 61}" r="5" fill="${style.dot}"/>`);
+    parts.push(`<text x="${x + 30}" y="${CARD_TOP + 65}" font-family="${SANS}" font-size="11.5" font-weight="600" fill="${style.dot}">${esc(style.text(s))}</text>`);
   });
+
+  if (sessions.list.length > n) {
+    const pages = Math.ceil(sessions.list.length / n);
+    const page = Math.floor(pageStart / n);
+    parts.push(`<text x="${w / 2}" y="15" text-anchor="middle" font-family="${SANS}" font-size="10" fill="${C.muted}">page ${page + 1}/${pages} · twist to scroll</text>`);
+  }
   return parts.join('');
 }
 
@@ -577,10 +655,10 @@ if (args.test !== undefined || process.argv.includes('--test') || process.argv.i
     const dir = path.join(__dirname, '..', 'logs');
     if (process.argv.includes('--mock')) {
       sessions.list = [
-        { name: 'miassist-studio', cwd: '/x/miassist-studio', state: 'waiting', ageMs: 14 * 60000, src: 'personal' },
-        { name: 'homereel', cwd: '/x/homereel', state: 'working', ageMs: 30000, src: 'business' },
-        { name: 'lead-research', cwd: '/x/lead-research', state: 'working', ageMs: 120000, src: 'personal' },
-        { name: 'crmboard', cwd: '/x/crmboard', state: 'idle', ageMs: 90 * 60000, src: 'business' },
+        { name: 'Fix quiz funnel lead routing', folder: 'miassist-studio', cwd: '/x/miassist-studio', state: 'waiting', ageMs: 14 * 60000, src: 'personal' },
+        { name: 'HomeReel iOS release checklist', folder: 'homereel', cwd: '/x/homereel', state: 'working', ageMs: 30000, src: 'business' },
+        { name: 'Scrape CRE leads from Galt post', folder: 'lead-research', cwd: '/x/lead-research', state: 'working', ageMs: 120000, src: 'personal' },
+        { name: 'CRM board deploy fix', folder: 'crmboard', cwd: '/x/crmboard', state: 'idle', ageMs: 90 * 60000, src: 'business' },
       ];
     } else {
       scanSessions();
@@ -708,11 +786,16 @@ ws.on('message', (buf) => {
           break;
         }
         if (ev.event === 'touchTap' && Array.isArray(ev.payload?.tapPos)) {
-          const y = ev.payload.tapPos[1];
-          const row = SESSION_ROWS.findIndex((r) => y >= r.y && y <= r.y + r.h);
-          const target = row >= 0 ? sessions.list[sessionWindowStart() + row] : null;
-          if (target) {
-            sessionSel = sessionWindowStart() + row;
+          const group = allEncoders().filter(([, i]) => i.action === SESSIONS_ACTION);
+          const sliceIdx = Math.max(0, group.findIndex(([ctx]) => ctx === ev.context));
+          const w = 200 * Math.max(1, group.length);
+          const { n, cardW } = cardGeometry(w);
+          const absX = ev.payload.tapPos[0] + sliceIdx * 200;
+          const cardIdx = Math.max(0, Math.min(n - 1, Math.floor((absX - CARD_MARGIN) / (cardW + CARD_MARGIN))));
+          const pageStart = Math.floor(sessionSel / n) * n;
+          const target = sessions.list[pageStart + cardIdx];
+          if (target && ev.payload.tapPos[1] >= CARD_TOP) {
+            sessionSel = pageStart + cardIdx;
             focusSession(target);
             renderAll();
             break;
