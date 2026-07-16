@@ -419,8 +419,12 @@ const IDLE_ACTS = [
   { kind: 'juggle', ticks: 12 },
   { kind: 'walk', ticks: 12 },
   { kind: 'spin', ticks: 10 },
+  { kind: 'dance', ticks: 10 },
   { kind: 'look', ticks: 8 },
   { kind: 'hop', ticks: 8 },
+  { kind: 'type', ticks: 10 },
+  { kind: 'stretch', ticks: 8 },
+  { kind: 'wave', ticks: 8 },
 ];
 let actIdx = 0;
 let actTick = 0;
@@ -428,7 +432,13 @@ function advanceMascot() {
   actTick++;
   if (actTick >= IDLE_ACTS[actIdx].ticks) {
     actTick = 0;
-    actIdx = (actIdx + 1) % IDLE_ACTS.length;
+    for (let i = 0; i < IDLE_ACTS.length; i++) {
+      actIdx = (actIdx + 1) % IDLE_ACTS.length;
+      const k = IDLE_ACTS[actIdx].kind;
+      // the typing bit only plays when an agent is actually working
+      if (k === 'type' && !sessions.list.some((s) => s.state === 'working')) continue;
+      break;
+    }
   }
 }
 
@@ -450,6 +460,18 @@ function chillPose(f) {
     const hops = [0, -4, -7, -8, -7, -4, 0, 0];
     return { grid: mascotGrid({ eyes: 'open', mouth: 'smile' }), body: C.coral, bob: hops[t % 8] };
   }
+  if (act === 'dance') {
+    return { grid: mascotGrid({ eyes: 'open', mouth: 'smile', arms: 'up' }), body: C.coral, bob: t % 2, dx: t % 2 ? 4 : -4 };
+  }
+  if (act === 'type') {
+    return { grid: mascotGrid({ eyes: 'down', arms: t % 2 ? 'type-a' : 'type-b' }), body: C.coral, bob: 0 };
+  }
+  if (act === 'stretch') {
+    return { grid: mascotGrid({ eyes: t < 4 ? 'closed' : 'open', arms: 'up' }), body: C.coral, bob: t % 4 < 2 ? -3 : 0 };
+  }
+  if (act === 'wave') {
+    return { grid: mascotGrid({ eyes: 'open', mouth: 'smile', arms: t % 2 ? 'up' : null }), body: C.coral, bob: 0 };
+  }
   // juggle (default)
   return { grid: mascotGrid({ eyes: t % 6 === 5 ? 'closed' : 'open' }), body: C.coral, bob: t % 2, ball: true };
 }
@@ -470,8 +492,9 @@ function mascotState() {
     }
   }
   if (worst >= 90) return 'panic';
-  if (waitingCount() > 0) return 'alert';
-  if (sessions.list.some((s) => s.state === 'working')) return 'working';
+  // the "!" pose only for FRESHLY finished sessions — long-idle prompts would
+  // otherwise lock the mascot in alert forever (the badge still shows counts)
+  if (sessions.list.some((s) => s.state === 'waiting' && s.ageMs < 10 * 60_000)) return 'alert';
   if (!sessions.list.length) return 'sleep';
   return 'chill';
 }
