@@ -371,44 +371,35 @@ function commsSlice(actionUUID, sliceIndex, totalSlices) {
 // alert (a session needs you), panic (a usage limit is critical)
 let mascotFrame = 0;
 
-function mascotGrid({ eyes = 'open', mouth = 'smile', arms = null }) {
-  const r = (s) => s.split('');
-  const g = [
-    r('..oooooooooo..'),
-    r('.oooooooooooo.'),
-    r('oooooooooooooo'),
-    r('oooooooooooooo'),
-    r('oooooooooooooo'),
-    r('oooooooooooooo'),
-    r('oooooooooooooo'),
-    r('oooooooooooooo'),
-    r('.oooooooooooo.'),
-    r('..oooooooooo..'),
-    r('..dd......dd..'),
-  ];
-  const setPx = (row, col, ch) => { if (g[row] && g[row][col] !== undefined) g[row][col] = ch; };
-  if (eyes === 'open') {
-    [[3, 3], [3, 4], [4, 3], [4, 4], [3, 9], [3, 10], [4, 9], [4, 10]].forEach(([r2, c]) => setPx(r2, c, 'd'));
-  } else if (eyes === 'closed') {
-    [[4, 3], [4, 4], [4, 9], [4, 10]].forEach(([r2, c]) => setPx(r2, c, 'd'));
-  } else if (eyes === 'down') {
-    [[4, 3], [4, 4], [5, 3], [5, 4], [4, 9], [4, 10], [5, 9], [5, 10]].forEach(([r2, c]) => setPx(r2, c, 'd'));
+// Clawd — Anthropic's boxy four-legged creature: wide orange body, ear nubs,
+// tall rectangular eyes (or "> <" when mad), four stubby legs.
+function mascotGrid({ eyes = 'open', step = 0 } = {}) {
+  const W = 16;
+  const blank = () => Array(W).fill('.');
+  const g = [];
+  const ears = blank();
+  [1, 2, 13, 14].forEach((c) => { ears[c] = 'o'; });
+  g.push(ears);
+  for (let i = 0; i < 6; i++) g.push(Array(W).fill('o'));
+  const allLegs = [1, 2, 5, 6, 9, 10, 13, 14];
+  const upper = blank();
+  allLegs.forEach((c) => { upper[c] = 'o'; });
+  const lower = blank();
+  const planted = step === 1 ? [1, 2, 9, 10] : step === 2 ? [5, 6, 13, 14] : allLegs;
+  planted.forEach((c) => { lower[c] = 'o'; });
+  g.push(upper, lower);
+
+  const setPx = (row, col) => { if (g[row] && g[row][col] !== undefined) g[row][col] = 'd'; };
+  const eyeRows = { open: [2, 3, 4], closed: [4], down: [3, 4, 5] };
+  if (eyes === 'angry') {
+    // > < chevrons
+    [[2, 3], [3, 4], [4, 3], [2, 12], [3, 11], [4, 12]].forEach(([r2, c]) => setPx(r2, c));
   } else if (eyes === 'left') {
-    [[3, 2], [3, 3], [4, 2], [4, 3], [3, 8], [3, 9], [4, 8], [4, 9]].forEach(([r2, c]) => setPx(r2, c, 'd'));
+    [2, 3, 4].forEach((r2) => { setPx(r2, 2); setPx(r2, 3); setPx(r2, 10); setPx(r2, 11); });
   } else if (eyes === 'right') {
-    [[3, 4], [3, 5], [4, 4], [4, 5], [3, 10], [3, 11], [4, 10], [4, 11]].forEach(([r2, c]) => setPx(r2, c, 'd'));
-  }
-  if (mouth === 'smile') {
-    [[6, 5], [7, 6], [7, 7], [6, 8]].forEach(([r2, c]) => setPx(r2, c, 'd'));
-  } else if (mouth === 'o') {
-    [[6, 6], [6, 7], [7, 6], [7, 7]].forEach(([r2, c]) => setPx(r2, c, 'd'));
-  }
-  if (arms === 'up') {
-    [[1, 0], [0, 0], [1, 13], [0, 13]].forEach(([r2, c]) => setPx(r2, c, 'd'));
-  } else if (arms === 'type-a') {
-    [[7, 0], [8, 1]].forEach(([r2, c]) => setPx(r2, c, 'd'));
-  } else if (arms === 'type-b') {
-    [[8, 0], [7, 1], [7, 12], [8, 13]].forEach(([r2, c]) => setPx(r2, c, 'd'));
+    [2, 3, 4].forEach((r2) => { setPx(r2, 4); setPx(r2, 5); setPx(r2, 12); setPx(r2, 13); });
+  } else {
+    (eyeRows[eyes] || eyeRows.open).forEach((r2) => { setPx(r2, 3); setPx(r2, 4); setPx(r2, 11); setPx(r2, 12); });
   }
   return g;
 }
@@ -447,7 +438,7 @@ function chillPose(f) {
   const t = actTick;
   if (act === 'walk') {
     const dxs = [0, 3, 6, 9, 12, 14, 12, 9, 6, 3, 0, 0];
-    return { grid: mascotGrid({ eyes: t < 6 ? 'right' : 'left' }), body: C.coral, bob: t % 2, dx: dxs[t % 12] };
+    return { grid: mascotGrid({ eyes: t < 6 ? 'right' : 'left', step: (t % 2) + 1 }), body: C.coral, bob: t % 2, dx: dxs[t % 12] };
   }
   if (act === 'spin') {
     return { spinSpark: true, body: C.coral };
@@ -458,31 +449,46 @@ function chillPose(f) {
   }
   if (act === 'hop') {
     const hops = [0, -4, -7, -8, -7, -4, 0, 0];
-    return { grid: mascotGrid({ eyes: 'open', mouth: 'smile' }), body: C.coral, bob: hops[t % 8] };
+    const airborne = hops[t % 8] < -3;
+    return { grid: mascotGrid({ eyes: 'open', step: airborne ? 1 : 0 }), body: C.coral, bob: hops[t % 8] };
   }
   if (act === 'dance') {
-    return { grid: mascotGrid({ eyes: 'open', mouth: 'smile', arms: 'up' }), body: C.coral, bob: t % 2, dx: t % 2 ? 4 : -4 };
+    return { grid: mascotGrid({ eyes: 'open', step: (t % 2) + 1 }), body: C.coral, bob: t % 2, dx: t % 2 ? 4 : -4 };
   }
   if (act === 'type') {
-    return { grid: mascotGrid({ eyes: 'down', arms: t % 2 ? 'type-a' : 'type-b' }), body: C.coral, bob: 0 };
+    return { grid: mascotGrid({ eyes: 'down', step: (t % 2) + 1 }), body: C.coral, bob: 0 };
   }
   if (act === 'stretch') {
-    return { grid: mascotGrid({ eyes: t < 4 ? 'closed' : 'open', arms: 'up' }), body: C.coral, bob: t % 4 < 2 ? -3 : 0 };
+    return { grid: mascotGrid({ eyes: t < 4 ? 'closed' : 'open' }), body: C.coral, bob: t % 4 < 2 ? -3 : 0 };
   }
   if (act === 'wave') {
-    return { grid: mascotGrid({ eyes: 'open', mouth: 'smile', arms: t % 2 ? 'up' : null }), body: C.coral, bob: 0 };
+    return { grid: mascotGrid({ eyes: 'open', step: t % 2 ? 1 : 0 }), body: C.coral, bob: 0 };
   }
-  // juggle (default)
-  return { grid: mascotGrid({ eyes: t % 6 === 5 ? 'closed' : 'open' }), body: C.coral, bob: t % 2, ball: true };
+  // juggle (default) — front-leg kick when the ball is low
+  const kicking = t % 4 === 0;
+  return { grid: mascotGrid({ eyes: t % 6 === 5 ? 'closed' : 'open', step: kicking ? 2 : 0 }), body: C.coral, bob: t % 2, ball: true };
 }
 
 const MASCOT_STATES = {
   chill: (f) => chillPose(f),
-  sleep: (f) => ({ grid: mascotGrid({ eyes: 'closed', mouth: 'o' }), body: C.coral, bob: f % 2 ? 1 : 0, zzz: f % 2 }),
-  working: (f) => ({ grid: mascotGrid({ eyes: 'down', arms: f % 2 ? 'type-a' : 'type-b' }), body: C.coral, bob: f % 2 }),
-  alert: (f) => ({ grid: mascotGrid({ eyes: 'open', mouth: 'o', arms: 'up' }), body: C.coral, bob: f % 2 ? 2 : 0, bang: true }),
-  panic: (f) => ({ grid: mascotGrid({ eyes: 'open', mouth: 'o', arms: 'up' }), body: C.red, bob: f % 2 ? 3 : 0, bang: true, sweat: f % 2 }),
+  sleep: (f) => ({ grid: mascotGrid({ eyes: 'closed' }), body: C.coral, bob: f % 2 ? 1 : 0, zzz: f % 2 }),
+  working: (f) => ({ grid: mascotGrid({ eyes: 'down', step: (f % 2) + 1 }), body: C.coral, bob: f % 2 }),
+  alert: (f) => ({ grid: mascotGrid({ eyes: 'angry', step: f % 2 ? 1 : 0 }), body: C.coral, bob: f % 2 ? 2 : 0, bang: true }),
+  panic: (f) => ({ grid: mascotGrid({ eyes: 'angry', step: (f % 2) + 1 }), body: C.red, bob: f % 2 ? 3 : 0, bang: true, sweat: f % 2 }),
 };
+
+// time-aware greetings, like Claude Code's own hellos
+const GREET_SETS = {
+  night: ['Hey, Night Owl', 'Still going, Fahim?', 'The grind never sleeps'],
+  morning: ['Good morning, Fahim', 'Rise and build', 'Coffee, then conquer'],
+  day: ['Hey, Fahim', 'Back at it', 'What are we shipping?'],
+  evening: ['Good evening, Fahim', 'Golden hour grind', 'Evening, boss'],
+};
+function greeting() {
+  const h = new Date().getHours();
+  const set = h < 5 ? GREET_SETS.night : h < 12 ? GREET_SETS.morning : h < 17 ? GREET_SETS.day : h < 21 ? GREET_SETS.evening : GREET_SETS.night;
+  return set[Math.floor(mascotFrame / 66) % set.length]; // rotates ~every 30s
+}
 
 function mascotState() {
   let worst = 0;
@@ -502,10 +508,10 @@ function mascotState() {
 function mascotSvg(x, y, scale, state, frame) {
   const { grid, body, bob = 0, dx = 0, zzz, bang, sweat, ball, spinSpark } = MASCOT_STATES[state](frame);
   if (spinSpark) {
-    const cx = x + 7 * scale;
-    const cy = y + 5.5 * scale;
+    const cx = x + 8 * scale;
+    const cy = y + 4.5 * scale;
     const angle = (actTick * 40) % 360;
-    return `<g transform="rotate(${angle} ${cx} ${cy})">${spark(cx, cy, 5.8 * scale, body)}</g>`;
+    return `<g transform="rotate(${angle} ${cx} ${cy})">${spark(cx, cy, 4.8 * scale, body)}</g>`;
   }
   const colors = { o: body, d: '#332017', w: '#BFDBFE' };
   const parts = [`<g>`];
@@ -528,8 +534,8 @@ function mascotSvg(x, y, scale, state, frame) {
     parts.push(`<text x="${x + 15.5 * scale}" y="${yy + 4 * scale}" font-family="${SANS}" font-size="${scale * 5}" font-weight="900" fill="${body === C.red ? C.red : C.amber}">!</text>`);
   }
   if (ball) {
-    // soccer ball juggle — foot, knee, head, knee
-    const spots = [[15.6, 9.2], [16.2, 5.4], [14.6, 0.6], [16.2, 5.4]];
+    // soccer ball juggle — foot, knee, header, knee
+    const spots = [[17.4, 8.2], [18, 4.6], [16.2, -0.6], [18, 4.6]];
     const [bc, br] = spots[actTick % 4];
     const bx = x + bc * scale;
     const by = yy + br * scale;
@@ -682,15 +688,16 @@ function duoInner(w) {
   let x0 = 4;
   if (w >= 760) {
     const st = mascotState();
-    parts.push(mascotSvg(14, 22, 4, st, mascotFrame));
-    parts.push(`<text x="86" y="52" font-family="${SERIF}" font-size="30" font-weight="700" fill="${C.cream}">Claude</text>`);
+    parts.push(mascotSvg(8, 26, 3.6, st, mascotFrame));
+    parts.push(`<text x="88" y="48" font-family="${SERIF}" font-size="26" font-weight="700" fill="${C.cream}">Claude</text>`);
     const waiting = waitingCount();
     if (waiting) {
-      parts.push(`<circle cx="92" cy="68" r="4" fill="${C.amber}"/>`);
-      parts.push(`<text x="100" y="72" font-family="${SANS}" font-size="11" font-weight="700" fill="${C.amber}">${waiting} need${waiting > 1 ? '' : 's'} you</text>`);
+      parts.push(`<circle cx="93" cy="66" r="4" fill="${C.amber}"/>`);
+      parts.push(`<text x="101" y="70" font-family="${SANS}" font-size="11" font-weight="700" fill="${C.amber}">${waiting} need${waiting > 1 ? '' : 's'} you</text>`);
+    } else if (st === 'panic') {
+      parts.push(`<text x="89" y="70" font-family="${SANS}" font-size="11" font-weight="700" fill="${C.red}">limit close!</text>`);
     } else {
-      const label = { chill: 'all good', sleep: 'sleeping', working: 'working…', panic: 'limit close!', alert: '' }[st];
-      if (label) parts.push(`<text x="88" y="72" font-family="${SANS}" font-size="11" fill="${st === 'panic' ? C.red : C.muted}">${label}</text>`);
+      parts.push(`<text x="89" y="70" font-family="${SANS}" font-size="11.5" fill="${C.muted}">${esc(greeting())}</text>`);
     }
     x0 = 196;
   }
