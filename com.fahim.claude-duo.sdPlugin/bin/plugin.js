@@ -347,6 +347,25 @@ function skillsSlice(sliceIndex, totalSlices) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="${200 * sliceIndex} 0 200 100">${inner}</svg>`;
 }
 
+// Press a knob on the usage page -> brand-new Claude terminal for that side
+function launchClaude(src) {
+  const isBiz = src === 'business';
+  const exec = isBiz
+    ? `CLAUDE_CONFIG_DIR=${os.homedir()}/.claude2 claude --dangerously-skip-permissions`
+    : 'claude';
+  const title = isBiz ? 'claude 2 · mi assist' : 'claude 1 · personal';
+  const dir = path.join(os.homedir(), '.warp', 'launch_configurations');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const yaml = `---\nname: claude-new\nwindows:\n  - tabs:\n      - title: ${title}\n        layout:\n          cwd: ${os.homedir()}\n          commands:\n            - exec: ${exec}\n`;
+    fs.writeFileSync(path.join(dir, 'claude-new.yaml'), yaml);
+    log(`launch new session: ${title}`);
+    execFile('/usr/bin/open', ['warp://launch/claude-new.yaml'], (e) => { if (e) log('warp launch failed:', e.message); });
+  } catch (e) {
+    log('launchClaude error:', e.message);
+  }
+}
+
 function launchSkill(cmd) {
   const safe = String(cmd).replace(/[^a-zA-Z0-9/_-]/g, '');
   const dir = path.join(os.homedir(), '.warp', 'launch_configurations');
@@ -371,35 +390,45 @@ function commsSlice(actionUUID, sliceIndex, totalSlices) {
 // alert (a session needs you), panic (a usage limit is critical)
 let mascotFrame = 0;
 
-// Clawd — Anthropic's boxy four-legged creature: wide orange body, ear nubs,
-// tall rectangular eyes (or "> <" when mad), four stubby legs.
+// Clawd — matched to the official sticker: square-ish body, small SQUARE
+// eyes set wide and high, little arms poking out the sides, four longer legs.
+// Angry face = "> <" chevrons.
 function mascotGrid({ eyes = 'open', step = 0 } = {}) {
   const W = 16;
   const blank = () => Array(W).fill('.');
   const g = [];
-  const ears = blank();
-  [1, 2, 13, 14].forEach((c) => { ears[c] = 'o'; });
-  g.push(ears);
-  for (let i = 0; i < 6; i++) g.push(Array(W).fill('o'));
-  const allLegs = [1, 2, 5, 6, 9, 10, 13, 14];
-  const upper = blank();
-  allLegs.forEach((c) => { upper[c] = 'o'; });
-  const lower = blank();
-  const planted = step === 1 ? [1, 2, 9, 10] : step === 2 ? [5, 6, 13, 14] : allLegs;
-  planted.forEach((c) => { lower[c] = 'o'; });
-  g.push(upper, lower);
+  // body rows 0-7 span cols 2..13; arms protrude rows 3-4
+  for (let r = 0; r < 8; r++) {
+    const row = blank();
+    for (let c = 2; c <= 13; c++) row[c] = 'o';
+    if (r === 3 || r === 4) { row[0] = 'o'; row[1] = 'o'; row[14] = 'o'; row[15] = 'o'; }
+    g.push(row);
+  }
+  // four legs, rows 8-11 (outer pair at body edges)
+  const allLegs = [2, 3, 6, 7, 9, 10, 12, 13];
+  const liftA = [2, 3, 9, 10];
+  const liftB = [6, 7, 12, 13];
+  for (let r = 0; r < 4; r++) {
+    const row = blank();
+    const planted = r >= 2 && step === 1 ? liftA : r >= 2 && step === 2 ? liftB : allLegs;
+    planted.forEach((c) => { row[c] = 'o'; });
+    g.push(row);
+  }
 
   const setPx = (row, col) => { if (g[row] && g[row][col] !== undefined) g[row][col] = 'd'; };
-  const eyeRows = { open: [2, 3, 4], closed: [4], down: [3, 4, 5] };
+  const sq = (r2, c) => { setPx(r2, c); setPx(r2, c + 1); setPx(r2 + 1, c); setPx(r2 + 1, c + 1); };
   if (eyes === 'angry') {
-    // > < chevrons
-    [[2, 3], [3, 4], [4, 3], [2, 12], [3, 11], [4, 12]].forEach(([r2, c]) => setPx(r2, c));
+    [[1, 4], [2, 5], [3, 4], [1, 11], [2, 10], [3, 11]].forEach(([r2, c]) => setPx(r2, c));
+  } else if (eyes === 'closed') {
+    setPx(2, 4); setPx(2, 5); setPx(2, 10); setPx(2, 11);
+  } else if (eyes === 'down') {
+    sq(3, 4); sq(3, 10);
   } else if (eyes === 'left') {
-    [2, 3, 4].forEach((r2) => { setPx(r2, 2); setPx(r2, 3); setPx(r2, 10); setPx(r2, 11); });
+    sq(1, 3); sq(1, 9);
   } else if (eyes === 'right') {
-    [2, 3, 4].forEach((r2) => { setPx(r2, 4); setPx(r2, 5); setPx(r2, 12); setPx(r2, 13); });
+    sq(1, 5); sq(1, 11);
   } else {
-    (eyeRows[eyes] || eyeRows.open).forEach((r2) => { setPx(r2, 3); setPx(r2, 4); setPx(r2, 11); setPx(r2, 12); });
+    sq(1, 4); sq(1, 10);
   }
   return g;
 }
@@ -487,7 +516,28 @@ const GREET_SETS = {
 function greeting() {
   const h = new Date().getHours();
   const set = h < 5 ? GREET_SETS.night : h < 12 ? GREET_SETS.morning : h < 17 ? GREET_SETS.day : h < 21 ? GREET_SETS.evening : GREET_SETS.night;
-  return set[Math.floor(mascotFrame / 66) % set.length]; // rotates ~every 30s
+  return set[Math.floor(mascotFrame / 66) % set.length];
+}
+
+// constant chatter — quips tied to the current routine + live status facts
+const ACT_QUIPS = {
+  juggle: ['watch this touch', 'still got it', 'header incoming'],
+  walk: ['just pacing', 'thinking…', 'lap number 47'],
+  spin: ['logo mode', 'wheee', 'spark form'],
+  dance: ['vibes only', 'shipping dance', 'lil celebration'],
+  look: ['anything new?', 'watching the board', 'all quiet?'],
+  hop: ['boing', 'hop hop', 'cardio'],
+  type: ['agents cooking', 'clack clack', 'deep in it'],
+  stretch: ['leg day', 'quick stretch', 'and… hold'],
+  wave: ['hey Fahim', 'yo boss', 'over here'],
+};
+function speech() {
+  const bucket = Math.floor(mascotFrame / 18); // new line ~every 8s
+  const working = sessions.list.filter((s) => s.state === 'working').length;
+  const status = working > 0 ? [`${working} agent${working > 1 ? 's' : ''} cooking`, 'limits looking good'] : ['limits looking good'];
+  const quips = ACT_QUIPS[IDLE_ACTS[actIdx].kind] || [];
+  const pool = [greeting(), ...quips, ...status];
+  return pool[bucket % pool.length];
 }
 
 function mascotState() {
@@ -697,7 +747,7 @@ function duoInner(w) {
     } else if (st === 'panic') {
       parts.push(`<text x="89" y="70" font-family="${SANS}" font-size="11" font-weight="700" fill="${C.red}">limit close!</text>`);
     } else {
-      parts.push(`<text x="89" y="70" font-family="${SANS}" font-size="11.5" fill="${C.muted}">${esc(greeting())}</text>`);
+      parts.push(`<text x="89" y="70" font-family="${SANS}" font-size="11.5" fill="${C.muted}">${esc(speech())}</text>`);
     }
     x0 = 196;
   }
@@ -1295,9 +1345,11 @@ ws.on('message', (buf) => {
         break;
       }
       if (ev.event === 'dialDown') {
-        // on the usage page: press a knob -> open the chat waiting longest
-        const needy = sessions.list.filter((s) => s.state === 'waiting').sort((a, b) => b.ageMs - a.ageMs)[0];
-        if (needy) { focusSession(needy, { deep: true }); break; }
+        // usage page: press a knob -> NEW terminal session for that side
+        // (left knobs = Claude 1 personal, right knobs = Claude 2 mi assist)
+        const col = contexts.get(ev.context)?.column ?? ev.payload?.coordinates?.column ?? 0;
+        launchClaude(col >= 2 ? 'business' : 'personal');
+        break;
       }
       send({ event: 'openUrl', payload: { url: 'https://claude.ai/settings/usage' } });
       break;
