@@ -653,14 +653,15 @@ function mascotSvg(x, y, scale, state, frame) {
   return parts.join('');
 }
 
-// ChatGPT blossom (six-petal knot), white disc + dark petals — the "ball"
+// ChatGPT "ball" — white blossom on the teal app-icon circle, so it pops on
+// the dark background instead of melting into it
 function chatgptLogo(cx, cy, r, rot = 0) {
   const parts = [`<g transform="rotate(${rot} ${cx} ${cy})">`];
-  parts.push(`<circle cx="${cx}" cy="${cy}" r="${r}" fill="#F4F4F4"/>`);
+  parts.push(`<circle cx="${cx}" cy="${cy}" r="${r}" fill="#74AA9C" stroke="#F0EEE6" stroke-width="${(r * 0.1).toFixed(1)}"/>`);
   for (let i = 0; i < 6; i++) {
-    parts.push(`<ellipse cx="${cx}" cy="${cy - r * 0.46}" rx="${r * 0.21}" ry="${r * 0.5}" fill="#111111" transform="rotate(${i * 60} ${cx} ${cy})"/>`);
+    parts.push(`<ellipse cx="${cx}" cy="${cy - r * 0.44}" rx="${r * 0.2}" ry="${r * 0.48}" fill="#FFFFFF" transform="rotate(${i * 60} ${cx} ${cy})"/>`);
   }
-  parts.push(`<circle cx="${cx}" cy="${cy}" r="${r * 0.26}" fill="#F4F4F4"/>`);
+  parts.push(`<circle cx="${cx}" cy="${cy}" r="${r * 0.24}" fill="#74AA9C"/>`);
   parts.push('</g>');
   return parts.join('');
 }
