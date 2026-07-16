@@ -437,9 +437,11 @@ function mascotGrid({ eyes = 'open', step = 0 } = {}) {
 // the spinning Claude spark, looks around, hops, repeat
 const IDLE_ACTS = [
   { kind: 'juggle', ticks: 12 },
+  { kind: 'alarm', ticks: 6 },
   { kind: 'walk', ticks: 12 },
   { kind: 'spin', ticks: 10 },
   { kind: 'dance', ticks: 10 },
+  { kind: 'alarm', ticks: 6 },
   { kind: 'look', ticks: 8 },
   { kind: 'hop', ticks: 8 },
   { kind: 'type', ticks: 10 },
@@ -455,8 +457,9 @@ function advanceMascot() {
     for (let i = 0; i < IDLE_ACTS.length; i++) {
       actIdx = (actIdx + 1) % IDLE_ACTS.length;
       const k = IDLE_ACTS[actIdx].kind;
-      // the typing bit only plays when an agent is actually working
+      // conditional acts: typing needs a working agent, alarm needs a fresh wait
       if (k === 'type' && !sessions.list.some((s) => s.state === 'working')) continue;
+      if (k === 'alarm' && !freshWaiting()) continue;
       break;
     }
   }
@@ -493,6 +496,9 @@ function chillPose(f) {
   if (act === 'wave') {
     return { grid: mascotGrid({ eyes: 'open', step: t % 2 ? 1 : 0 }), body: C.coral, bob: 0 };
   }
+  if (act === 'alarm') {
+    return { grid: mascotGrid({ eyes: 'angry', step: t % 2 ? 1 : 0 }), body: C.coral, bob: t % 2 ? 2 : 0, bang: true };
+  }
   // juggle (default) — front-leg kick when the ball is low
   const kicking = t % 4 === 0;
   return { grid: mascotGrid({ eyes: t % 6 === 5 ? 'closed' : 'open', step: kicking ? 2 : 0 }), body: C.coral, bob: t % 2, ball: true };
@@ -522,6 +528,7 @@ function greeting() {
 // constant chatter — quips tied to the current routine + live status facts
 const ACT_QUIPS = {
   juggle: ['watch this touch', 'still got it', 'header incoming'],
+  alarm: ['a chat needs you!', 'check the board', 'someone is waiting'],
   walk: ['just pacing', 'thinking…', 'lap number 47'],
   spin: ['logo mode', 'wheee', 'spark form'],
   dance: ['vibes only', 'shipping dance', 'lil celebration'],
@@ -548,11 +555,13 @@ function mascotState() {
     }
   }
   if (worst >= 90) return 'panic';
-  // the "!" pose only for FRESHLY finished sessions — long-idle prompts would
-  // otherwise lock the mascot in alert forever (the badge still shows counts)
-  if (sessions.list.some((s) => s.state === 'waiting' && s.ageMs < 10 * 60_000)) return 'alert';
   if (!sessions.list.length) return 'sleep';
+  // the show always runs — "needs you" is an act in the rotation, not a lock
   return 'chill';
+}
+
+function freshWaiting() {
+  return sessions.list.some((s) => s.state === 'waiting' && s.ageMs < 10 * 60_000);
 }
 
 function mascotSvg(x, y, scale, state, frame) {
@@ -741,11 +750,12 @@ function duoInner(w) {
     parts.push(mascotSvg(8, 26, 3.6, st, mascotFrame));
     parts.push(`<text x="88" y="48" font-family="${SERIF}" font-size="26" font-weight="700" fill="${C.cream}">Claude</text>`);
     const waiting = waitingCount();
-    if (waiting) {
+    const showBadge = waiting && Math.floor(mascotFrame / 18) % 2 === 0; // alternate badge <-> speech
+    if (st === 'panic') {
+      parts.push(`<text x="89" y="70" font-family="${SANS}" font-size="11" font-weight="700" fill="${C.red}">limit close!</text>`);
+    } else if (showBadge) {
       parts.push(`<circle cx="93" cy="66" r="4" fill="${C.amber}"/>`);
       parts.push(`<text x="101" y="70" font-family="${SANS}" font-size="11" font-weight="700" fill="${C.amber}">${waiting} need${waiting > 1 ? '' : 's'} you</text>`);
-    } else if (st === 'panic') {
-      parts.push(`<text x="89" y="70" font-family="${SANS}" font-size="11" font-weight="700" fill="${C.red}">limit close!</text>`);
     } else {
       parts.push(`<text x="89" y="70" font-family="${SANS}" font-size="11.5" fill="${C.muted}">${esc(speech())}</text>`);
     }
