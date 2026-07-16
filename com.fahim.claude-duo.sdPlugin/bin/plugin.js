@@ -495,8 +495,28 @@ ws.on('message', (buf) => {
     case 'dialDown':
       send({ event: 'openUrl', payload: { url: 'https://claude.ai/settings/usage' } });
       break;
+    case 'dialRotate':
+      adjustVolume(ev.payload?.ticks ?? 0);
+      break;
   }
 });
 
 ws.on('close', () => { log('socket closed, exiting'); process.exit(0); });
 ws.on('error', (err) => { log('socket error', err.message); });
+
+// Dial rotation = system volume (throttled so fast spins don't spawn 20 processes)
+let volPending = 0;
+let volTimer = null;
+function adjustVolume(ticks) {
+  volPending += ticks;
+  if (volTimer) return;
+  volTimer = setTimeout(() => {
+    const delta = volPending * 3;
+    volPending = 0;
+    volTimer = null;
+    if (!delta) return;
+    execFile('/usr/bin/osascript', ['-e',
+      `set volume output volume ((output volume of (get volume settings)) + ${delta})`,
+    ], () => {});
+  }, 120);
+}
