@@ -764,27 +764,47 @@ function focusSession(s, opts = {}) {
     return;
   }
   const bundle = s.bundle || 'dev.warp.Warp-Stable';
-  log(`focus: "${s.name}" app=${s.appName || 'default(Warp)'} bundle=${bundle}`);
+  const words = tabKeywords(s.name);
+  log(`focus: "${s.name}" app=${s.appName || 'default(Warp)'} keywords=${words.join(',')}`);
   execFile('/usr/bin/open', ['-b', bundle], (e) => { if (e) log('open -b failed:', e.message); });
-  const needle = (s.name || '').replace(/["\\]/g, '').slice(0, 18);
-  if (!needle) return;
-  // best-effort: raise the window, then try clicking the matching tab in the
-  // sidebar (requires Accessibility permission for Stream Deck; logged if not)
+  if (!words.length) return;
+  // Terminal tabs can't be clicked from outside (no AX tree), but they CAN be
+  // cycled: Ctrl+Tab through tabs, reading the window title after each hop,
+  // stop when it matches the session's keywords. Needs Accessibility for
+  // Stream Deck — the log says so explicitly if it's missing.
+  const cond = words.map((w) => `t contains "${w}"`).join(' or ');
   const script = `
     tell application "System Events"
       tell (first process whose bundle identifier is "${bundle}")
         set frontmost to true
-        try
-          perform action "AXRaise" of (first window whose title contains "${needle}")
-        end try
-        try
-          click (first UI element of entire contents of window 1 whose role is "AXStaticText" and value contains "${needle}")
-        end try
+        delay 0.2
+        set found to false
+        repeat with i from 1 to 18
+          set t to title of window 1
+          if (${cond}) then
+            set found to true
+            exit repeat
+          end if
+          keystroke tab using control down
+          delay 0.15
+        end repeat
+        return found
       end tell
     end tell`;
-  execFile('/usr/bin/osascript', ['-e', script], (e, _so, se) => {
-    if (e) log('tab focus skipped (grant Stream Deck Accessibility?):', String(se || e.message).trim().slice(0, 140));
+  execFile('/usr/bin/osascript', ['-e', script], (e, so, se) => {
+    if (e) log('tab cycle BLOCKED — grant Stream Deck Accessibility in System Settings:', String(se || e.message).trim().slice(0, 140));
+    else log('tab cycle result: found=' + String(so).trim());
   });
+}
+
+function tabKeywords(name) {
+  const stop = new Set(['claude', 'session', 'about', 'their', 'there', 'which', 'would', 'could', 'should', 'going', 'want']);
+  return (name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 5 && !stop.has(w))
+    .slice(0, 3);
 }
 
 // ---------- Stream Deck wiring ----------
