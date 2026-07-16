@@ -215,6 +215,157 @@ function invader(x, y, s, color) {
   return parts.join('');
 }
 
+// ---- comms board (Slack / WhatsApp dock badges) ----
+// macOS exposes each app's dock badge (the red unread bubble) via lsappinfo —
+// exactly the number the user sees, no APIs, no tokens.
+const COMMS = {
+  'com.fahim.claude-duo.slack': {
+    app: 'Slack', bundle: 'com.tinyspeck.slackmacgap', accent: '#36C5F0',
+  },
+  'com.fahim.claude-duo.whatsapp': {
+    app: 'WhatsApp', bundle: 'net.whatsapp.WhatsApp', accent: '#25D366',
+  },
+};
+const badges = {}; // app -> { running, label }
+
+function pollBadges() {
+  for (const cfg of Object.values(COMMS)) {
+    execFile('/usr/bin/lsappinfo', ['info', '-only', 'StatusLabel', cfg.app], { timeout: 4000 }, (err, out) => {
+      const running = !err && !!(out || '').trim();
+      const m = (out || '').match(/"label"="([^"]*)"/);
+      badges[cfg.app] = { running, label: m ? m[1] : '' };
+    });
+  }
+}
+
+function slackLogo(x, y, s) {
+  // four-color hash, simplified
+  const bars = [
+    [`${x + s * 1.2},${y}`, '#36C5F0', 0],
+    [`${x + s * 2.8},${y + s * 1.6}`, '#2EB67D', 90],
+    [`${x + s * 1.2},${y + s * 2.8}`, '#ECB22E', 0],
+    [`${x - 0.4 * s},${y + s * 1.6}`, '#E01E5A', 90],
+  ];
+  const parts = [];
+  for (const [pos, color, rot] of bars) {
+    const [px, py] = pos.split(',').map(Number);
+    parts.push(`<rect x="${px}" y="${py}" width="${s * 1.1}" height="${s * 2.6}" rx="${s * 0.55}" fill="${color}" transform="rotate(${rot} ${px + s * 0.55} ${py + s * 1.3})"/>`);
+  }
+  return parts.join('');
+}
+
+function whatsappLogo(cx, cy, r) {
+  return (
+    `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#25D366"/>` +
+    `<polygon points="${cx - r * 0.85},${cy + r * 1.05} ${cx - r * 0.25},${cy + r * 0.6} ${cx - r * 0.75},${cy + r * 0.35}" fill="#25D366"/>` +
+    `<path d="M ${cx - r * 0.42} ${cy - r * 0.45} q ${r * 0.12} -${r * 0.18} ${r * 0.26} -${r * 0.04} l ${r * 0.16} ${r * 0.2} q ${r * 0.08} ${r * 0.14} -${r * 0.04} ${r * 0.26} q ${r * 0.06} ${r * 0.34} ${r * 0.42} ${r * 0.5} q ${r * 0.3} ${r * 0.14} ${r * 0.44} ${r * 0.02} q ${r * 0.14} -${r * 0.1} ${r * 0.26} -${r * 0.02} l ${r * 0.18} ${r * 0.18} q ${r * 0.12} ${r * 0.16} -${r * 0.06} ${r * 0.3} q -${r * 0.3} ${r * 0.24} -${r * 0.72} ${r * 0.04} q -${r * 0.6} -${r * 0.3} -${r * 0.86} -${r * 0.78} q -${r * 0.18} -${r * 0.36} ${r * 0.16} -${r * 0.66} z" fill="#FFFFFF"/>`
+  );
+}
+
+function commsInner(actionUUID, w) {
+  const cfg = COMMS[actionUUID];
+  const b = badges[cfg.app] || { running: false, label: '' };
+  const parts = [];
+  parts.push(`<rect width="${w}" height="100" fill="${C.bg}"/>`);
+  const badgeColor = cfg.app === 'Slack' ? '#E01E5A' : '#25D366';
+  const label = b.label === '•' ? '•' : b.label;
+  const hasUnread = b.running && label && label !== '0';
+
+  if (w < 300) {
+    // compact single-slot card
+    if (cfg.app === 'Slack') parts.push(slackLogo(16, 12, 11));
+    else parts.push(whatsappLogo(32, 28, 18));
+    parts.push(`<text x="62" y="34" font-family="${SERIF}" font-size="17" font-weight="700" fill="${C.cream}">${esc(cfg.app)}</text>`);
+    if (!b.running) {
+      parts.push(`<text x="100" y="72" text-anchor="middle" font-family="${SANS}" font-size="11" fill="${C.muted}">closed · tap to open</text>`);
+    } else if (hasUnread) {
+      parts.push(`<circle cx="100" cy="66" r="22" fill="${badgeColor}"/>`);
+      parts.push(`<text x="100" y="${label === '•' ? 78 : 74}" text-anchor="middle" font-family="${SANS}" font-size="${label.length > 2 ? 18 : 24}" font-weight="800" fill="#FFFFFF">${esc(label)}</text>`);
+    } else {
+      parts.push(`<text x="100" y="74" text-anchor="middle" font-family="${SANS}" font-size="22" fill="${C.muted}">✓</text>`);
+    }
+    return parts.join('');
+  }
+
+  const logoCx = 52;
+  if (cfg.app === 'Slack') parts.push(slackLogo(logoCx - 24, 26, 16));
+  else parts.push(whatsappLogo(logoCx, 48, 26));
+  parts.push(`<text x="${logoCx + 44}" y="42" font-family="${SERIF}" font-size="24" font-weight="700" fill="${C.cream}">${esc(cfg.app)}</text>`);
+
+  if (!b.running) {
+    parts.push(`<text x="${logoCx + 45}" y="66" font-family="${SANS}" font-size="12" fill="${C.muted}">closed · tap to open</text>`);
+  } else if (hasUnread) {
+    parts.push(`<circle cx="${w - 64}" cy="50" r="30" fill="${badgeColor}"/>`);
+    parts.push(`<text x="${w - 64}" y="${label === '•' ? 66 : 61}" text-anchor="middle" font-family="${SANS}" font-size="${label.length > 2 ? 24 : 32}" font-weight="800" fill="#FFFFFF">${esc(label)}</text>`);
+    parts.push(`<text x="${logoCx + 45}" y="66" font-family="${SANS}" font-size="12" fill="${C.muted}">${label === '•' ? 'new activity' : 'unread'} · tap to open</text>`);
+  } else {
+    parts.push(`<text x="${w - 64}" y="56" text-anchor="middle" font-family="${SANS}" font-size="26" fill="${C.muted}">✓</text>`);
+    parts.push(`<text x="${logoCx + 45}" y="66" font-family="${SANS}" font-size="12" fill="${C.muted}">all clear · tap to open</text>`);
+  }
+  return parts.join('');
+}
+
+// ---- skills dial ----
+// Twist through the most-used skills, press to launch it in a fresh Warp tab
+// (via a Warp launch configuration, which CAN exec commands).
+const SKILLS_ACTION = 'com.fahim.claude-duo.skills';
+const DEFAULT_SKILLS = [
+  '/morning-briefing', '/summarize', '/pickup', '/ghl-summary',
+  '/client-reply', '/eod-summary', '/inbox-cleaner', '/organize-vault',
+  '/summarize-chat', '/push-workspace',
+];
+function loadSkills() {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'accounts.json'), 'utf8'));
+    if (Array.isArray(cfg.skills) && cfg.skills.length) return cfg.skills;
+  } catch {}
+  return DEFAULT_SKILLS;
+}
+const SKILLS = loadSkills();
+let skillSel = 0;
+
+function skillsInner(w) {
+  const parts = [];
+  parts.push(`<rect width="${w}" height="100" fill="${C.bg}"/>`);
+  parts.push(spark(18, 14, 8, C.coral));
+  parts.push(`<text x="34" y="19" font-family="${SANS}" font-size="11" font-weight="700" letter-spacing="1.5" fill="${C.muted}">SKILLS ${skillSel + 1}/${SKILLS.length}</text>`);
+  const cur = SKILLS[skillSel] || '';
+  const prev = SKILLS[(skillSel - 1 + SKILLS.length) % SKILLS.length];
+  const next = SKILLS[(skillSel + 1) % SKILLS.length];
+  let size = 26;
+  while (cur.length * size * 0.55 > w - 40 && size > 14) size -= 2;
+  parts.push(`<text x="${w / 2}" y="56" text-anchor="middle" font-family="${SANS}" font-size="${size}" font-weight="800" fill="${C.cream}">${esc(cur)}</text>`);
+  parts.push(`<text x="14" y="56" font-family="${SANS}" font-size="12" fill="${C.muted}">‹</text>`);
+  parts.push(`<text x="${w - 14}" y="56" text-anchor="end" font-family="${SANS}" font-size="12" fill="${C.muted}">›</text>`);
+  parts.push(`<text x="${w / 2}" y="80" text-anchor="middle" font-family="${SANS}" font-size="10.5" fill="${C.muted}">${esc(prev)}  ·  twist to pick  ·  ${esc(next)}</text>`);
+  parts.push(`<text x="${w / 2}" y="95" text-anchor="middle" font-family="${SANS}" font-size="10.5" font-weight="700" fill="${C.coral}">press dial to run in Warp</text>`);
+  return parts.join('');
+}
+
+function skillsSlice(sliceIndex, totalSlices) {
+  const inner = skillsInner(200 * totalSlices);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="${200 * sliceIndex} 0 200 100">${inner}</svg>`;
+}
+
+function launchSkill(cmd) {
+  const safe = String(cmd).replace(/[^a-zA-Z0-9/_-]/g, '');
+  const dir = path.join(os.homedir(), '.warp', 'launch_configurations');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const yaml = `---\nname: claude-skill\nwindows:\n  - tabs:\n      - title: claude ${safe}\n        layout:\n          cwd: ${os.homedir()}\n          commands:\n            - exec: claude "${safe}"\n`;
+    fs.writeFileSync(path.join(dir, 'claude-skill.yaml'), yaml);
+    log(`launch skill: ${safe}`);
+    execFile('/usr/bin/open', ['warp://launch/claude-skill.yaml'], (e) => { if (e) log('warp launch failed:', e.message); });
+  } catch (e) {
+    log('launchSkill error:', e.message);
+  }
+}
+
+function commsSlice(actionUUID, sliceIndex, totalSlices) {
+  const inner = commsInner(actionUUID, 200 * totalSlices);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="${200 * sliceIndex} 0 200 100">${inner}</svg>`;
+}
+
 // ---- the little Claude creature ----
 // state-driven pixel mascot: chill (blinks), sleep, working (typing),
 // alert (a session needs you), panic (a usage limit is critical)
@@ -300,6 +451,16 @@ function mascotSvg(x, y, scale, state, frame) {
   }
   if (bang) {
     parts.push(`<text x="${x + 15.5 * scale}" y="${yy + 4 * scale}" font-family="${SANS}" font-size="${scale * 5}" font-weight="900" fill="${body === C.red ? C.red : C.amber}">!</text>`);
+  }
+  if (state === 'chill') {
+    // soccer ball juggle — foot, knee, head, knee
+    const spots = [[15.6, 9.2], [16.2, 5.4], [14.6, 0.6], [16.2, 5.4]];
+    const [bc, br] = spots[frame % 4];
+    const bx = x + bc * scale;
+    const by = yy + br * scale;
+    const rr = scale * 1.35;
+    parts.push(`<circle cx="${bx}" cy="${by}" r="${rr}" fill="#F5F0E5" stroke="#332017" stroke-width="1"/>`);
+    parts.push(`<circle cx="${bx}" cy="${by}" r="${rr * 0.38}" fill="#332017"/>`);
   }
   parts.push('</g>');
   return parts.join('');
@@ -896,6 +1057,26 @@ function allEncoders() {
 function renderContext(context) {
   const info = contexts.get(context);
   if (!info) return;
+  if (info.action === SKILLS_ACTION) {
+    if (info.controller === 'Encoder') {
+      const group = allEncoders().filter(([, i]) => i.action === SKILLS_ACTION);
+      const idx = Math.max(0, group.findIndex(([ctx]) => ctx === context));
+      send({ event: 'setFeedback', context, payload: { canvas: svgToPngDataUri(skillsSlice(idx, Math.max(1, group.length))) } });
+    } else {
+      send({ event: 'setImage', context, payload: { image: svgToPngDataUri(`<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="28 0 144 100">${skillsInner(200)}</svg>`), target: 0 } });
+    }
+    return;
+  }
+  if (COMMS[info.action]) {
+    if (info.controller === 'Encoder') {
+      const group = allEncoders().filter(([, i]) => i.action === info.action);
+      const idx = Math.max(0, group.findIndex(([ctx]) => ctx === context));
+      send({ event: 'setFeedback', context, payload: { canvas: svgToPngDataUri(commsSlice(info.action, idx, Math.max(1, group.length))) } });
+    } else {
+      send({ event: 'setImage', context, payload: { image: svgToPngDataUri(`<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="28 0 144 100">${commsInner(info.action, 200)}</svg>`), target: 0 } });
+    }
+    return;
+  }
   if (info.action === SESSIONS_ACTION) {
     if (info.controller === 'Encoder') {
       const group = allEncoders().filter(([, i]) => i.action === SESSIONS_ACTION);
@@ -961,6 +1142,8 @@ ws.on('open', () => {
   setInterval(renderAll, RENDER_INTERVAL_MS);
   scanSessions();
   enrichSessionApps(renderAll);
+  pollBadges();
+  setInterval(pollBadges, 10_000);
   setInterval(() => {
     scanSessions();
     enrichSessionApps(renderAll);
@@ -992,6 +1175,14 @@ ws.on('message', (buf) => {
     case 'keyDown':
     case 'touchTap':
     case 'dialDown': {
+      if (COMMS[ev.action]) {
+        execFile('/usr/bin/open', ['-b', COMMS[ev.action].bundle], () => {});
+        break;
+      }
+      if (ev.action === SKILLS_ACTION) {
+        launchSkill(SKILLS[skillSel]);
+        break;
+      }
       if (ev.action === SESSIONS_ACTION) {
         if (ev.event === 'dialDown') {
           // press the knob -> open the highlighted session's exact chat
@@ -1029,6 +1220,11 @@ ws.on('message', (buf) => {
       break;
     }
     case 'dialRotate':
+      if (ev.action === SKILLS_ACTION) {
+        skillSel = (skillSel + (ev.payload?.ticks > 0 ? 1 : -1) + SKILLS.length) % SKILLS.length;
+        renderAll();
+        break;
+      }
       if (ev.action === SESSIONS_ACTION) {
         const max = Math.max(0, sessions.list.length - 1);
         sessionSel = Math.max(0, Math.min(max, sessionSel + (ev.payload?.ticks > 0 ? 1 : -1)));

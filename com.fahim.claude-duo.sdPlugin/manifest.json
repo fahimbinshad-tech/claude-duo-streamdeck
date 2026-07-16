@@ -55,6 +55,48 @@
         "TriggerDescription": { "Touch": "Focus that session's window", "Rotate": "Scroll sessions", "Push": "Refresh" }
       },
       "States": [{ "Image": "imgs/key-personal" }]
+    },
+    {
+      "UUID": "com.fahim.claude-duo.skills",
+      "Name": "Skills Dial",
+      "Tooltip": "Twist through your top Claude skills, press to run in Warp",
+      "Icon": "imgs/skills",
+      "Controllers": ["Keypad", "Encoder"],
+      "Encoder": {
+        "layout": "layouts/usage-strip.json",
+        "StackColor": "#E07B54",
+        "Icon": "imgs/skills",
+        "TriggerDescription": { "Touch": "Run selected skill", "Rotate": "Pick skill", "Push": "Run selected skill" }
+      },
+      "States": [{ "Image": "imgs/key-personal" }]
+    },
+    {
+      "UUID": "com.fahim.claude-duo.slack",
+      "Name": "Slack Unread",
+      "Tooltip": "Slack dock badge — tap to open Slack",
+      "Icon": "imgs/slack",
+      "Controllers": ["Keypad", "Encoder"],
+      "Encoder": {
+        "layout": "layouts/usage-strip.json",
+        "StackColor": "#36C5F0",
+        "Icon": "imgs/slack",
+        "TriggerDescription": { "Touch": "Open Slack", "Push": "Open Slack" }
+      },
+      "States": [{ "Image": "imgs/key-personal" }]
+    },
+    {
+      "UUID": "com.fahim.claude-duo.whatsapp",
+      "Name": "WhatsApp Unread",
+      "Tooltip": "WhatsApp dock badge — tap to open WhatsApp",
+      "Icon": "imgs/whatsapp",
+      "Controllers": ["Keypad", "Encoder"],
+      "Encoder": {
+        "layout": "layouts/usage-strip.json",
+        "StackColor": "#25D366",
+        "Icon": "imgs/whatsapp",
+        "TriggerDescription": { "Touch": "Open WhatsApp", "Push": "Open WhatsApp" }
+      },
+      "States": [{ "Image": "imgs/key-personal" }]
     }
   ]
 }
