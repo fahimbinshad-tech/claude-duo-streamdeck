@@ -736,19 +736,27 @@ function enrichSessionApps(done) {
   });
 }
 
-// Tap/press -> open the EXACT chat on claude.ai (remote-controlled live view
-// of the session). Falls back to raising the hosting app when no bridge id.
-function focusSession(s) {
-  if (s.bridge) {
-    log(`focus: "${s.name}" -> https://claude.ai/code/${s.bridge}`);
-    execFile('/usr/bin/open', [`https://claude.ai/code/${s.bridge}`], (e) => { if (e) log('open url failed:', e.message); });
+// Quick tap / dial press -> jump to the terminal hosting the session (raise
+// the window whose title carries the session name).
+// LONG press -> open the exact chat on claude.ai, in the Chrome profile that
+// holds that Claude account's login (accounts.json "chromeProfile").
+function focusSession(s, opts = {}) {
+  if (opts.deep && s.bridge) {
+    const acct = ACCOUNTS[`com.fahim.claude-duo.${s.src}`] || {};
+    const url = `https://claude.ai/code/${s.bridge}`;
+    log(`focus deep: "${s.name}" -> ${url} chromeProfile=${acct.chromeProfile || 'default browser'}`);
+    if (acct.chromeProfile) {
+      execFile('/usr/bin/open', ['-na', 'Google Chrome', '--args', `--profile-directory=${acct.chromeProfile}`, url], (e) => { if (e) log('chrome open failed:', e.message); });
+    } else {
+      execFile('/usr/bin/open', [url], (e) => { if (e) log('open url failed:', e.message); });
+    }
     return;
   }
   const bundle = s.bundle || 'dev.warp.Warp-Stable';
   log(`focus: "${s.name}" app=${s.appName || 'default(Warp)'} bundle=${bundle}`);
   execFile('/usr/bin/open', ['-b', bundle], (e) => { if (e) log('open -b failed:', e.message); });
-  const needle = (s.cwd ? path.basename(s.cwd) : '').replace(/["\\]/g, '');
-  if (!needle || needle === os.homedir().split('/').pop()) return;
+  const needle = (s.name || '').replace(/["\\]/g, '');
+  if (!needle) return;
   execFile('/usr/bin/osascript', ['-e',
     `tell application "System Events" to tell (first process whose bundle identifier is "${bundle}") to perform action "AXRaise" of (first window whose title contains "${needle}")`,
   ], (e, _so, se) => { if (e) log('window raise skipped:', String(se || e.message).trim().slice(0, 140)); });
@@ -933,7 +941,7 @@ ws.on('message', (buf) => {
           const target = sessions.list[pageStart + cardIdx];
           if (target && ev.payload.tapPos[1] >= CARD_TOP) {
             sessionSel = pageStart + cardIdx;
-            focusSession(target);
+            focusSession(target, { deep: !!ev.payload.hold });
             renderAll();
             break;
           }
