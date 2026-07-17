@@ -1395,42 +1395,26 @@ function crmInner(w) {
     const l = list[crmSel];
     parts.push(`<rect x="${CARD_MARGIN}" y="${CARD_TOP}" width="${w - CARD_MARGIN * 2}" height="${CARD_H}" rx="10" fill="#2B2740" stroke="${cat.color}" stroke-width="2"/>`);
     parts.push(`<rect x="${CARD_MARGIN}" y="${CARD_TOP}" width="8" height="${CARD_H}" rx="4" fill="${cat.color}"/>`);
-    // ── zone 1: who they are ──
-    const nameSize = l.name.length > 22 ? 15 : 18;
-    parts.push(`<text x="26" y="${CARD_TOP + 24}" font-family="${SANS}" font-size="${nameSize}" font-weight="800" fill="#FFFFFF">${esc(l.name.slice(0, 30))}</text>`);
+    // ── left: who + how to reach them (big, sparse) ──
+    const nameSize = l.name.length > 18 ? 17 : 20;
+    parts.push(`<text x="26" y="${CARD_TOP + 27}" font-family="${SANS}" font-size="${nameSize}" font-weight="800" fill="#FFFFFF">${esc(l.name.slice(0, 24))}</text>`);
     const bits = [catText(l)];
-    if (l.stage) bits.push(stageLabel(l.stage));
-    if (l.temperature) bits.push(l.temperature);
-    parts.push(`<text x="26" y="${CARD_TOP + 44}" font-family="${SANS}" font-size="11.5" font-weight="600" fill="${cat.color}">${esc(bits.join(' · '))}</text>`);
+    if (l.dealValue) bits.push(`$${l.dealValue}`);
+    parts.push(`<text x="26" y="${CARD_TOP + 48}" font-family="${SANS}" font-size="12.5" font-weight="600" fill="${cat.color}">${esc(bits.join(' · '))}</text>`);
     const phone = fmtPhone(l.phone);
-    if (phone) parts.push(`<text x="26" y="${CARD_TOP + 61}" font-family="${SANS}" font-size="12.5" font-weight="600" fill="${C.cream}">${esc(phone)}</text>`);
-    const emailShort = l.email && l.email.length > 30 ? `${l.email.slice(0, 29)}…` : l.email;
-    parts.push(`<text x="26" y="${CARD_TOP + (phone ? 74 : 64)}" font-family="${SANS}" font-size="${phone ? 10.5 : 12.5}" fill="${l.email ? C.cream : C.muted}">${esc(emailShort || (phone ? '' : 'no contact info on file'))}</text>`);
-    // ── zone 2: the last note ──
-    const noteX = 296;
-    parts.push(`<rect x="${noteX - 14}" y="${CARD_TOP + 8}" width="1.5" height="${CARD_H - 16}" fill="#3B3554"/>`);
-    parts.push(`<text x="${noteX}" y="${CARD_TOP + 18}" font-family="${SANS}" font-size="9.5" font-weight="700" letter-spacing="1" fill="${C.muted}">LAST NOTE${l.note ? ` · ${leadAgo(l.noteAgeMs)} AGO` : ''}</text>`);
+    const reach = phone || (l.email && l.email.length > 26 ? `${l.email.slice(0, 25)}…` : l.email) || 'no contact info';
+    parts.push(`<text x="26" y="${CARD_TOP + 68}" font-family="${SANS}" font-size="14" font-weight="700" fill="${phone || l.email ? C.cream : C.muted}">${esc(reach)}</text>`);
+    // ── right: the last note, big and readable ──
+    const noteX = 300;
+    parts.push(`<rect x="${noteX - 16}" y="${CARD_TOP + 10}" width="1.5" height="${CARD_H - 20}" fill="#3B3554"/>`);
+    parts.push(`<text x="${noteX}" y="${CARD_TOP + 18}" font-family="${SANS}" font-size="10" font-weight="700" letter-spacing="1" fill="${C.muted}">${l.note ? `LAST NOTE · ${leadAgo(l.noteAgeMs).toUpperCase()} AGO` : 'LAST NOTE'}</text>`);
     if (l.note) {
-      const noteLines = wrapTwo(l.note, 54); // breaks at words, ellipsis on overflow
-      parts.push(`<text x="${noteX}" y="${CARD_TOP + 38}" font-family="${SANS}" font-size="12" fill="${C.cream}">${esc(noteLines[0])}</text>`);
-      if (noteLines[1]) parts.push(`<text x="${noteX}" y="${CARD_TOP + 55}" font-family="${SANS}" font-size="12" fill="${C.cream}">${esc(noteLines[1])}</text>`);
+      const noteLines = wrapTwo(l.note, 60);
+      parts.push(`<text x="${noteX}" y="${CARD_TOP + 42}" font-family="${SANS}" font-size="14.5" fill="${C.cream}">${esc(noteLines[0])}</text>`);
+      if (noteLines[1]) parts.push(`<text x="${noteX}" y="${CARD_TOP + 63}" font-family="${SANS}" font-size="14.5" fill="${C.cream}">${esc(noteLines[1])}</text>`);
     } else {
-      parts.push(`<text x="${noteX}" y="${CARD_TOP + 40}" font-family="${SANS}" font-size="12" fill="${C.muted}">no notes yet</text>`);
+      parts.push(`<text x="${noteX}" y="${CARD_TOP + 46}" font-family="${SANS}" font-size="14" fill="${C.muted}">no notes yet — tap to open them on the board</text>`);
     }
-    const srcLine = [srcWord(l.src), l.website ? l.website.replace(/^https?:\/\/(www\.)?/, '') : null].filter(Boolean).join(' · ');
-    if (srcLine) parts.push(`<text x="${noteX}" y="${CARD_TOP + 72}" font-family="${SANS}" font-size="10.5" fill="${C.muted}">${esc(`from: ${srcLine}`.slice(0, 60))}</text>`);
-    // ── zone 3: business facts ──
-    const factX = 656;
-    parts.push(`<rect x="${factX - 14}" y="${CARD_TOP + 8}" width="1.5" height="${CARD_H - 16}" fill="#3B3554"/>`);
-    const facts = [];
-    if (l.industry) facts.push([String(l.industry).slice(0, 18), C.cream]);
-    if (l.monthlyRevenue) facts.push([`revenue: ${String(l.monthlyRevenue).slice(0, 12)}`, C.cream]);
-    if (l.dealValue) facts.push([`deal: $${l.dealValue}`, GREEN]);
-    if (!facts.length) facts.push(['no business info', C.muted]);
-    facts.slice(0, 3).forEach(([text, color], i) => {
-      parts.push(`<text x="${factX}" y="${CARD_TOP + 22 + i * 18}" font-family="${SANS}" font-size="11.5" font-weight="600" fill="${color}">${esc(text)}</text>`);
-    });
-    parts.push(`<text x="${factX}" y="${CARD_TOP + 72}" font-family="${SANS}" font-size="9.5" fill="${C.muted}">tap: open on board</text>`);
     return parts.join('');
   }
 
