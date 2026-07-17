@@ -882,7 +882,7 @@ const SESSION_REGISTRIES = [
   { dir: path.join(os.homedir(), '.claude', 'sessions'), src: 'personal' },
   { dir: path.join(os.homedir(), '.claude2', 'sessions'), src: 'business' },
 ];
-const ACCOUNT_COLORS = { personal: '#60A5FA', business: '#F472B6' };
+const ACCOUNT_COLORS = { personal: '#F97316', business: '#4ADE80' }; // orange = personal, green = mi assist
 
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -1126,7 +1126,7 @@ function crmConfig() {
   try { cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'accounts.json'), 'utf8')).crm || {}; } catch {}
   return {
     envPath: cfg.envPath || path.join(os.homedir(), 'code', 'miassist-crmboard', '.env.local'),
-    baseUrl: (cfg.baseUrl || 'https://www.miassist.studio').replace(/\/$/, ''),
+    baseUrl: (cfg.baseUrl || 'https://crm.miassist.studio').replace(/\/$/, ''),
     chromeProfile: cfg.chromeProfile || null,
   };
 }
@@ -1195,10 +1195,12 @@ async function fetchLeads() {
     const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
     const list = rows.map((l) => {
       const createdMs = Date.parse(l.created_at) || 0;
-      const due = l.follow_up_at && Date.parse(l.follow_up_at) <= now;
+      const followMs = l.follow_up_at ? Date.parse(l.follow_up_at) : 0;
+      const due = followMs > 0 && followMs <= now;
       return {
         id: l.id, name: leadName(l), stage: l.stage, temperature: l.temperature,
-        createdMs, ageMs: now - createdMs, due,
+        createdMs, ageMs: now - createdMs, followMs, due,
+        phone: l.phone || null, email: l.email || null, src: l.utm_source || null,
         // "needs you" = overdue follow-up, or an untouched lead still fresh
         // enough to save (48h) — NOT every stale quiz lead ever
         needs: due || ((l.stage === 'new' || l.stage === 'to_contact') && now - createdMs < 48 * 3600_000),

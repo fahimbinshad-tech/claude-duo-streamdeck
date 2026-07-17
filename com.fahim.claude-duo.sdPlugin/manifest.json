@@ -34,7 +34,7 @@
       ],
       "Encoder": {
         "layout": "layouts/usage-strip.json",
-        "StackColor": "#60a5fa",
+        "StackColor": "#F97316",
         "Icon": "imgs/personal",
         "TriggerDescription": {
           "Touch": "Open claude.ai usage",
@@ -58,7 +58,7 @@
       ],
       "Encoder": {
         "layout": "layouts/usage-strip.json",
-        "StackColor": "#c084fc",
+        "StackColor": "#4ADE80",
         "Icon": "imgs/business",
         "TriggerDescription": {
           "Touch": "Open claude.ai usage",
