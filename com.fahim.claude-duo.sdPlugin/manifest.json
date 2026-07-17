@@ -221,6 +221,44 @@
           "Image": "imgs/skills"
         }
       ]
+    },
+    {
+      "UUID": "com.fahim.claude-duo.ads",
+      "Name": "Ads Today",
+      "Tooltip": "Today's spend, leads, and cost per lead per Meta ad account \u2014 tap opens that exact account in Ads Manager (read-only)",
+      "Icon": "imgs/ads",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "layouts/usage-strip.json",
+        "StackColor": "#E07B54",
+        "Icon": "imgs/ads",
+        "TriggerDescription": {
+          "Touch": "Open that account in Ads Manager (hold = Claude status)",
+          "Push": "Open Ads Manager"
+        }
+      },
+      "States": [
+        {
+          "Image": "imgs/ads"
+        }
+      ]
+    },
+    {
+      "UUID": "com.fahim.claude-duo.adskey",
+      "Name": "Ad Account Key",
+      "Tooltip": "One ad account per key (by position) \u2014 press opens that exact account in Ads Manager",
+      "Icon": "imgs/ads",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/ads"
+        }
+      ]
     }
   ]
 }

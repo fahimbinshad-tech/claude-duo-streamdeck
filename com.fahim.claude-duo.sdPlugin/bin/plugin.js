@@ -1197,6 +1197,9 @@ const crm = { cats: { saved: [], worked: [], followup: [], newtoday: [] }, error
 let crmCat = 'newtoday';
 let crmMode = 'list'; // 'list' | 'detail'
 let crmSel = 0;
+let crmNewDays = 1; // hold the New Today key to widen: 1 -> 3 -> 7 days
+function newTodayLabel() { return crmNewDays === 1 ? 'New Today' : `New · ${crmNewDays} Days`; }
+function newTodayWords() { return crmNewDays === 1 ? ['New', 'Today'] : ['New', `${crmNewDays} Days`]; }
 let leadAlert = null; // { name, at } — a brand-new lead just landed
 
 function crmActiveList() { return crm.cats[crmCat] || []; }
@@ -1266,7 +1269,7 @@ async function fetchLeads() {
       crmQuery(creds, 'saved_at=not.is.null&order=saved_at.desc'),
       crmQuery(creds, 'last_worked_at=not.is.null&order=last_worked_at.desc'),
       crmQuery(creds, `follow_up_at=lte.${encodeURIComponent(endOfDay.toISOString())}&order=follow_up_at.asc`),
-      crmQuery(creds, `created_at=gte.${encodeURIComponent(midnight.toISOString())}&order=created_at.desc`),
+      crmQuery(creds, `created_at=gte.${encodeURIComponent((crmNewDays === 1 ? midnight : new Date(now - crmNewDays * 86400_000)).toISOString())}&order=created_at.desc`),
     ]);
     crm.cats = {
       saved: saved.map((l) => mapLead(l, now)),
@@ -1322,7 +1325,7 @@ function crmInner(w) {
   parts.push(`<rect width="${w}" height="100" fill="${C.bg}"/>`);
   parts.push(invader(8, 2, 1.3, C.coral));
   parts.push(`<text x="28" y="15" font-family="${SERIF}" font-size="14" font-weight="700" fill="${C.cream}">CRM ·</text>`);
-  parts.push(`<text x="76" y="15" font-family="${SERIF}" font-size="14" font-weight="700" fill="${cat.color}">${esc(cat.label)}</text>`);
+  parts.push(`<text x="76" y="15" font-family="${SERIF}" font-size="14" font-weight="700" fill="${cat.color}">${esc(cat.key === 'newtoday' ? newTodayLabel() : cat.label)}</text>`);
   const alert = leadAlertFresh();
   const headRight = crm.error ? 'CRM offline'
     : alert ? `NEW: ${alert.name}`
@@ -1410,12 +1413,13 @@ function crmCatKeySvg(col) {
   parts.push(`<rect width="144" height="144" rx="14" fill="${C.bg}"/>`);
   if (active) parts.push(`<rect x="3" y="3" width="138" height="138" rx="12" fill="${cat.color}" opacity="0.16"/>`);
   parts.push(`<rect x="3" y="3" width="138" height="138" rx="12" fill="none" stroke="${active ? '#FFFFFF' : cat.color}" stroke-width="${active ? 3 : 2}"${active ? '' : ' opacity="0.55"'}/>`);
-  const words = cat.words;
+  const words = cat.key === 'newtoday' ? newTodayWords() : cat.words;
   const y0 = words.length > 1 ? 40 : 50;
   words.forEach((word, i) => {
     parts.push(`<text x="72" y="${y0 + i * 22}" text-anchor="middle" font-family="${SANS}" font-size="18" font-weight="800" fill="${active ? '#FFFFFF' : C.cream}">${esc(word)}</text>`);
   });
   parts.push(`<text x="72" y="118" text-anchor="middle" font-family="${SANS}" font-size="38" font-weight="800" fill="${cat.color}">${count}</text>`);
+  if (cat.key === 'newtoday') parts.push(`<text x="72" y="135" text-anchor="middle" font-family="${SANS}" font-size="9" fill="${C.muted}">hold: more days</text>`);
   parts.push(`</svg>`);
   return parts.join('');
 }
@@ -1475,6 +1479,155 @@ function launchCrmBrief() {
     log('launch crm brief');
     execFile('/usr/bin/open', ['warp://launch/claude-crm.yaml'], (e) => { if (e) log('warp launch failed:', e.message); });
   } catch (e) { log('launchCrmBrief error:', e.message); }
+}
+
+// ═══════════════════ Ads page (Meta Ads Manager, read-only) ═══════════════════
+// Today's spend / leads / cost-per-lead per ad account, polled gently (the
+// Graph API rate-limits hard). Press an account -> that EXACT account opens
+// in Ads Manager. This page never writes to any ad account.
+const ADS_ACTION = 'com.fahim.claude-duo.ads';
+const ADSKEY_ACTION = 'com.fahim.claude-duo.adskey';
+const ADS_POLL_MS = 15 * 60_000;
+
+function adsConfig() {
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'accounts.json'), 'utf8')).ads || {}; } catch {}
+  return {
+    tokenPath: String(cfg.tokenPath || '').replace(/^~/, os.homedir()),
+    accounts: (Array.isArray(cfg.accounts) ? cfg.accounts : []).filter((a) => a && a.act),
+  };
+}
+
+const ads = { rows: [], error: null, fetchedAt: 0 };
+const ADS_CACHE_FILE = path.join(__dirname, '..', 'logs', 'ads-cache.json');
+try {
+  const saved = JSON.parse(fs.readFileSync(ADS_CACHE_FILE, 'utf8'));
+  if (Array.isArray(saved.rows)) { ads.rows = saved.rows; ads.fetchedAt = saved.fetchedAt || 0; }
+} catch {}
+
+function adsToken() {
+  const { tokenPath } = adsConfig();
+  if (!tokenPath) return null;
+  try { return fs.readFileSync(tokenPath, 'utf8').trim(); } catch { return null; }
+}
+
+async function fetchAds() {
+  const { accounts } = adsConfig();
+  const token = adsToken();
+  if (!accounts.length || !token) { ads.error = accounts.length ? 'no ads token' : 'no ads accounts set up'; return; }
+  const rows = [];
+  try {
+    for (const a of accounts) {
+      const res = await fetch(`https://graph.facebook.com/v21.0/act_${a.act}/insights?date_preset=today&fields=spend,actions&access_token=${token}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const d = (json.data && json.data[0]) || {};
+      const spend = parseFloat(d.spend || '0') || 0;
+      let leads = 0;
+      for (const act of d.actions || []) {
+        if (act.action_type === 'lead') { leads = parseInt(act.value, 10) || 0; break; }
+        if (act.action_type === 'offsite_conversion.fb_pixel_lead') leads = parseInt(act.value, 10) || leads;
+      }
+      rows.push({ label: a.label || `act ${a.act}`, act: a.act, spend, leads, cpl: leads ? spend / leads : null });
+      await new Promise((r) => setTimeout(r, 600)); // no bursts, ever
+    }
+    const firstAdsFetch = !ads.fetchedAt;
+    ads.rows = rows;
+    ads.error = null;
+    ads.fetchedAt = Date.now();
+    if (firstAdsFetch) log(`ads ok: ${rows.map((r) => `${r.label}=$${r.spend.toFixed(2)}/${r.leads}L`).join(' ')}`);
+    try { fs.writeFileSync(ADS_CACHE_FILE, JSON.stringify({ rows, fetchedAt: ads.fetchedAt })); } catch {}
+  } catch (e) {
+    ads.error = e.message;
+    log('fetchAds failed:', e.message);
+  }
+}
+
+function money(n) { return n >= 100 ? `$${Math.round(n)}` : `$${n.toFixed(2)}`; }
+
+function openAdsAccount(act) {
+  const url = act
+    ? `https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=${act}`
+    : 'https://adsmanager.facebook.com/adsmanager/';
+  log(`open ads: ${url}`);
+  execFile('/usr/bin/open', [url], (e) => { if (e) log('open ads failed:', e.message); });
+}
+
+function launchAdsBrief() {
+  const dir = path.join(os.homedir(), '.warp', 'launch_configurations');
+  const prompt = 'Read-only status of my Meta ads today and last 3 days: spend, leads, and cost per lead for each account, plus anything that needs attention. Do not change anything on any account.';
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const yaml = `---\nname: claude-ads\nwindows:\n  - tabs:\n      - title: claude · ads status\n        layout:\n          cwd: ${os.homedir()}\n          commands:\n            - exec: claude "${prompt}"\n`;
+    fs.writeFileSync(path.join(dir, 'claude-ads.yaml'), yaml);
+    log('launch ads brief');
+    execFile('/usr/bin/open', ['warp://launch/claude-ads.yaml'], (e) => { if (e) log('warp launch failed:', e.message); });
+  } catch (e) { log('launchAdsBrief error:', e.message); }
+}
+
+function adsRowLine(r) {
+  if (r.leads) return { text: `${r.leads} lead${r.leads > 1 ? 's' : ''} · ${money(r.cpl)} each`, color: GREEN };
+  if (r.spend > 0) return { text: 'spending · no leads yet', color: C.amber };
+  return { text: 'quiet today', color: C.muted };
+}
+
+function adsInner(w) {
+  const parts = [];
+  parts.push(`<rect width="${w}" height="100" fill="${C.bg}"/>`);
+  parts.push(invader(8, 2, 1.3, C.coral));
+  parts.push(`<text x="28" y="15" font-family="${SERIF}" font-size="14" font-weight="700" fill="${C.cream}">Ads · Today</text>`);
+  const total = ads.rows.reduce((a, r) => a + r.spend, 0);
+  const headRight = ads.error ? `ads offline — ${ads.error}`
+    : ads.rows.length ? `${money(total)} total · tap: open account · hold: brief`
+    : 'add accounts in accounts.json';
+  parts.push(`<text x="${w - 10}" y="14" text-anchor="end" font-family="${SANS}" font-size="11" font-weight="600" fill="${ads.error ? C.red : C.muted}">${esc(headRight)}</text>`);
+  if (!ads.rows.length) {
+    parts.push(`<text x="${w / 2}" y="62" text-anchor="middle" font-family="${SANS}" font-size="13" fill="${C.muted}">no ad accounts configured</text>`);
+    return parts.join('');
+  }
+  const { n, cardW } = cardGeometry(w);
+  ads.rows.slice(0, n).forEach((r, i) => {
+    const x = CARD_MARGIN + i * (cardW + CARD_MARGIN);
+    const line = adsRowLine(r);
+    parts.push(`<rect x="${x}" y="${CARD_TOP}" width="${cardW}" height="${CARD_H}" rx="10" fill="${C.card}"/>`);
+    parts.push(`<rect x="${x}" y="${CARD_TOP}" width="6" height="${CARD_H}" rx="3" fill="${line.color === C.muted ? C.track : line.color}"/>`);
+    parts.push(`<text x="${x + 15}" y="${CARD_TOP + 22}" font-family="${SANS}" font-size="13" font-weight="700" fill="${C.cream}">${esc(r.label)}</text>`);
+    parts.push(`<text x="${x + 15}" y="${CARD_TOP + 48}" font-family="${SANS}" font-size="22" font-weight="800" fill="${C.cream}">${esc(money(r.spend))}</text>`);
+    parts.push(`<circle cx="${x + 20}" cy="${CARD_TOP + 63}" r="5" fill="${line.color}"/>`);
+    parts.push(`<text x="${x + 30}" y="${CARD_TOP + 67}" font-family="${SANS}" font-size="11.5" font-weight="600" fill="${line.color}">${esc(line.text)}</text>`);
+  });
+  return parts.join('');
+}
+
+function adsSlice(sliceIndex, totalSlices) {
+  const inner = adsInner(200 * totalSlices);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="${200 * sliceIndex} 0 200 100">${inner}</svg>`;
+}
+
+function adsKeySvg(col) {
+  const r = ads.rows[col];
+  const parts = [];
+  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">`);
+  parts.push(`<rect width="144" height="144" rx="14" fill="${C.bg}"/>`);
+  if (!r) {
+    if (col === 3) {
+      // the fourth key is always the door to Ads Manager itself
+      parts.push(`<text x="72" y="62" text-anchor="middle" font-family="${SANS}" font-size="19" font-weight="800" fill="${C.cream}">All Ads</text>`);
+      parts.push(`<text x="72" y="88" text-anchor="middle" font-family="${SANS}" font-size="12" fill="${C.muted}">Ads Manager</text>`);
+    } else {
+      parts.push(`<text x="72" y="82" text-anchor="middle" font-family="${SANS}" font-size="22" fill="#2A2638">·</text>`);
+    }
+    parts.push('</svg>');
+    return parts.join('');
+  }
+  const line = adsRowLine(r);
+  parts.push(`<rect x="0" y="0" width="8" height="144" fill="${line.color === C.muted ? C.track : line.color}"/>`);
+  parts.push(`<text x="20" y="38" font-family="${SANS}" font-size="16" font-weight="700" fill="${C.cream}">${esc(r.label)}</text>`);
+  parts.push(`<text x="20" y="78" font-family="${SANS}" font-size="26" font-weight="800" fill="${C.cream}">${esc(money(r.spend))}</text>`);
+  parts.push(`<text x="20" y="106" font-family="${SANS}" font-size="12" font-weight="600" fill="${line.color}">${esc(r.leads ? `${r.leads} leads · ${money(r.cpl)}` : line.text)}</text>`);
+  parts.push(`<text x="20" y="132" font-family="${SANS}" font-size="11" fill="${C.muted}">press: open account</text>`);
+  parts.push('</svg>');
+  return parts.join('');
 }
 
 // ---- session -> hosting app wiring ----
@@ -1670,6 +1823,20 @@ if (args.test !== undefined || process.argv.includes('--test') || process.argv.i
       png('test-duo-newlead-800.png', duoInner(800));
       leadAlert = null;
     }
+    if (mock) {
+      ads.rows = [
+        { label: 'My Studio', act: '1', spend: 12.47, leads: 3, cpl: 4.16 },
+        { label: 'AgentNaf', act: '2', spend: 18.9, leads: 2, cpl: 9.45 },
+        { label: 'CHS', act: '3', spend: 6.2, leads: 0, cpl: null },
+      ];
+      ads.fetchedAt = Date.now();
+    } else {
+      await fetchAds();
+      console.log('ads', JSON.stringify(ads.rows.map((r) => ({ [r.label]: `$${r.spend} / ${r.leads}L` }))));
+    }
+    png('test-ads-800.png', adsInner(800));
+    keyPng('test-key-ads-0.png', adsKeySvg(0));
+    keyPng('test-key-ads-3.png', adsKeySvg(3));
     keyPng('test-key-crm.png', crmKeySvg());
     keyPng('test-key-cat-followup.png', crmCatKeySvg(2));
     keyPng('test-key-cat-newtoday.png', crmCatKeySvg(3));
@@ -1747,6 +1914,20 @@ function renderContext(context) {
     send({ event: 'setImage', context, payload: { image: svgToPngDataUri(skillKeySvg(idx)), target: 0 } });
     return;
   }
+  if (info.action === ADS_ACTION) {
+    if (info.controller === 'Encoder') {
+      const group = allEncoders().filter(([, i]) => i.action === ADS_ACTION);
+      const idx = Math.max(0, group.findIndex(([ctx]) => ctx === context));
+      send({ event: 'setFeedback', context, payload: { canvas: svgToPngDataUri(adsSlice(idx, Math.max(1, group.length))) } });
+    } else {
+      send({ event: 'setImage', context, payload: { image: svgToPngDataUri(adsKeySvg(0)), target: 0 } });
+    }
+    return;
+  }
+  if (info.action === ADSKEY_ACTION) {
+    send({ event: 'setImage', context, payload: { image: svgToPngDataUri(adsKeySvg(info.column ?? 0)), target: 0 } });
+    return;
+  }
   if (info.controller === 'Encoder') {
     const everyone = allEncoders().filter(([, i]) => i.action !== SESSIONS_ACTION && i.action !== CRM_ACTION && i.action !== CRMLEAD_ACTION);
     const distinct = new Set(everyone.map(([, i]) => i.action));
@@ -1806,6 +1987,8 @@ ws.on('open', () => {
   setInterval(pollBadges, 10_000);
   fetchLeads().then(renderAll);
   setInterval(() => fetchLeads().then(renderAll), CRM_POLL_MS);
+  fetchAds().then(renderAll);
+  setInterval(() => fetchAds().then(renderAll), ADS_POLL_MS);
   setInterval(() => {
     scanSessions();
     enrichSessionApps(renderAll);
@@ -1819,10 +2002,36 @@ ws.on('open', () => {
   }, 450);
 });
 
+const keyDownAt = new Map(); // context -> press time, to tell a hold from a tap
 ws.on('message', (buf) => {
   let ev;
   try { ev = JSON.parse(buf.toString()); } catch { return; }
   switch (ev.event) {
+    case 'keyUp': {
+      if (ev.action !== CRMLEAD_ACTION) break;
+      const held = Date.now() - (keyDownAt.get(ev.context) || Date.now());
+      keyDownAt.delete(ev.context);
+      const info = contexts.get(ev.context) || {};
+      const row = info.row ?? ev.payload?.coordinates?.row ?? 0;
+      const col = info.column ?? ev.payload?.coordinates?.column ?? 0;
+      if (row === 0) {
+        const cat = CRM_CATS[col];
+        if (!cat) break;
+        if (cat.key === 'newtoday' && crmCat === 'newtoday' && held > 550) {
+          // hold New Today -> widen the window: today -> 3 days -> 7 days
+          const steps = [1, 3, 7];
+          crmNewDays = steps[(steps.indexOf(crmNewDays) + 1) % steps.length];
+          crmMode = 'list'; crmSel = 0;
+          renderAll(); // show the new label instantly...
+          fetchLeads().then(renderAll); // ...then the wider list
+        } else {
+          crmCat = cat.key; crmMode = 'list'; crmSel = 0; renderAll();
+        }
+      } else if (crmActiveList()[col]) {
+        crmSel = col; crmMode = 'detail'; renderAll();
+      }
+      break;
+    }
     case 'willAppear':
       contexts.set(ev.context, {
         action: ev.action,
@@ -1853,17 +2062,30 @@ ws.on('message', (buf) => {
         if (SKILLS[idx]) launchSkill(SKILLS[idx]);
         break;
       }
-      if (ev.action === CRMLEAD_ACTION) {
-        const info = contexts.get(ev.context) || {};
-        const row = info.row ?? ev.payload?.coordinates?.row ?? 0;
-        const col = info.column ?? ev.payload?.coordinates?.column ?? 0;
-        if (row === 0) {
-          // top row = category buttons
-          if (CRM_CATS[col]) { crmCat = CRM_CATS[col].key; crmMode = 'list'; crmSel = 0; renderAll(); }
-        } else if (crmActiveList()[col]) {
-          // bottom row = that person -> detail view on the strip
-          crmSel = col; crmMode = 'detail'; renderAll();
+      if (ev.action === ADSKEY_ACTION) {
+        const col = contexts.get(ev.context)?.column ?? ev.payload?.coordinates?.column ?? 0;
+        const row = ads.rows[col];
+        openAdsAccount(row ? row.act : null); // empty slots (incl. "All Ads") -> Ads Manager home
+        break;
+      }
+      if (ev.action === ADS_ACTION) {
+        if (ev.event === 'touchTap' && Array.isArray(ev.payload?.tapPos)) {
+          if (ev.payload.hold) { launchAdsBrief(); break; }
+          const group = allEncoders().filter(([, i]) => i.action === ADS_ACTION);
+          const sliceIdx = Math.max(0, group.findIndex(([ctx]) => ctx === ev.context));
+          const w = 200 * Math.max(1, group.length);
+          const absX = ev.payload.tapPos[0] + sliceIdx * 200;
+          const { n, cardW } = cardGeometry(w);
+          const cardIdx = Math.max(0, Math.min(n - 1, Math.floor((absX - CARD_MARGIN) / (cardW + CARD_MARGIN))));
+          openAdsAccount(ads.rows[cardIdx] ? ads.rows[cardIdx].act : null);
+          break;
         }
+        openAdsAccount(null); // knob press / plain key -> Ads Manager home
+        break;
+      }
+      if (ev.action === CRMLEAD_ACTION) {
+        // act on keyUp so we can tell a hold from a press (see the keyUp case)
+        keyDownAt.set(ev.context, Date.now());
         break;
       }
       if (ev.action === CRM_ACTION) {
