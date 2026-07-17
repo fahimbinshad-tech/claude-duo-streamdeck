@@ -1786,10 +1786,10 @@ function adsWinKeySvg(col) {
   return parts.join('');
 }
 
-// ═══════════════════ Money page (GHL invoices, read-only) ═══════════════════
-// Every client invoice: who owes what and when it's due. Reads the GoHighLevel
-// invoice list with the token in accounts.json (gitignored). NEVER creates or
-// sends anything.
+// ═══════════════════ Money page (active clients roster, read-only) ═══════════════════
+// WHO is active, WHAT they pay, WHO owes and WHEN. The roster is the live GHL
+// recurring-invoice schedules — signed retainers appear, cancelled ones drop
+// off. One-off prospect invoices never show. NEVER creates or sends anything.
 const MONEY_ACTION = 'com.fahim.claude-duo.money';
 const MONEYKEY_ACTION = 'com.fahim.claude-duo.moneykey';
 const MONEY_POLL_MS = 10 * 60_000;
@@ -1800,27 +1800,39 @@ function ghlConfig() {
   return { token: cfg.token || null, locationId: cfg.locationId || null };
 }
 
-const moneyState = { unpaid: [], outstanding: 0, overdue: 0, collectedMonth: 0, error: null, fetchedAt: 0 };
+const moneyState = { clients: [], mrr: 0, owedTotal: 0, owedCount: 0, collectedMonth: 0, error: null, fetchedAt: 0 };
+let moneySel = 0;
 const MONEY_CACHE_FILE = path.join(__dirname, '..', 'logs', 'money-cache.json');
 try {
   const saved = JSON.parse(fs.readFileSync(MONEY_CACHE_FILE, 'utf8'));
-  if (Array.isArray(saved.unpaid)) Object.assign(moneyState, saved, { error: null });
+  if (Array.isArray(saved.clients)) Object.assign(moneyState, saved, { error: null });
 } catch {}
+
+async function ghlGet(pathname) {
+  const { token } = ghlConfig();
+  const res = await fetch(`https://services.leadconnectorhq.com${pathname}`, {
+    headers: { Authorization: `Bearer ${token}`, Version: '2021-07-28' },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
 
 async function fetchInvoices() {
   const { token, locationId } = ghlConfig();
   if (!token || !locationId) { moneyState.error = 'no GHL config'; return; }
   try {
-    const res = await fetch(`https://services.leadconnectorhq.com/invoices/?altId=${locationId}&altType=location&limit=100&offset=0`, {
-      headers: { Authorization: `Bearer ${token}`, Version: '2021-07-28' },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = await res.json();
     const now = Date.now();
     const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
-    const unpaid = [];
+    const [schedJson, invJson] = await Promise.all([
+      ghlGet(`/invoices/schedule?altId=${locationId}&altType=location&limit=50&offset=0`),
+      ghlGet(`/invoices/?altId=${locationId}&altType=location&limit=100&offset=0`),
+    ]);
+
+    // every invoice grouped by contact — this is where "owes what / when" lives
+    const byContact = {};
     let collectedMonth = 0;
-    for (const inv of json.invoices || []) {
+    for (const inv of invJson.invoices || []) {
+      const key = ((inv.contactDetails && (inv.contactDetails.id || inv.contactDetails.name)) || '?').toString().toLowerCase();
       const total = parseFloat(inv.total) || 0;
       const dueMs = inv.dueDate ? Date.parse(inv.dueDate) : 0;
       if (inv.status === 'paid') {
@@ -1828,35 +1840,52 @@ async function fetchInvoices() {
         continue;
       }
       if (['void', 'deleted', 'draft'].includes(inv.status)) continue;
-      unpaid.push({
-        client: ((inv.contactDetails && inv.contactDetails.name) || inv.name || 'unknown').trim(),
-        title: inv.name || '',
-        total, dueMs,
-        daysLate: dueMs ? Math.floor((now - dueMs) / 86400_000) : 0,
+      const slot = (byContact[key] = byContact[key] || { owed: 0, dueMs: 0 });
+      slot.owed += total;
+      if (!slot.dueMs || (dueMs && dueMs < slot.dueMs)) slot.dueMs = dueMs;
+    }
+
+    // the roster: live recurring schedules, ranked by what they pay
+    const clients = [];
+    for (const s of schedJson.schedules || []) {
+      if (!['active', 'scheduled'].includes(s.status)) continue;
+      const cd = s.contactDetails || {};
+      const key = ((cd.id || cd.name) || '?').toString().toLowerCase();
+      const monthly = parseFloat((s.invoice && s.invoice.total) ?? s.total) || 0;
+      const debt = byContact[key] || { owed: 0, dueMs: 0 };
+      clients.push({
+        name: (cd.name || s.name || 'unknown').trim(),
+        monthly,
+        owed: debt.owed,
+        dueMs: debt.dueMs,
+        daysLate: debt.dueMs ? Math.floor((now - debt.dueMs) / 86400_000) : 0,
       });
     }
-    unpaid.sort((a, b) => (a.dueMs || Infinity) - (b.dueMs || Infinity)); // most overdue first
+    clients.sort((a, b) => b.monthly - a.monthly); // highest payer on top
     const firstFetch = !moneyState.fetchedAt;
-    moneyState.unpaid = unpaid;
-    moneyState.outstanding = unpaid.reduce((a, i) => a + i.total, 0);
-    moneyState.overdue = unpaid.filter((i) => i.daysLate > 0).length;
+    moneyState.clients = clients;
+    moneyState.mrr = clients.reduce((a, c) => a + c.monthly, 0);
+    moneyState.owedTotal = clients.reduce((a, c) => a + c.owed, 0);
+    moneyState.owedCount = clients.filter((c) => c.owed > 0).length;
     moneyState.collectedMonth = collectedMonth;
     moneyState.error = null;
     moneyState.fetchedAt = now;
-    if (firstFetch) log(`money ok: ${unpaid.length} unpaid $${moneyState.outstanding} (${moneyState.overdue} overdue), collected this month $${collectedMonth}`);
-    try { fs.writeFileSync(MONEY_CACHE_FILE, JSON.stringify({ unpaid, outstanding: moneyState.outstanding, overdue: moneyState.overdue, collectedMonth, fetchedAt: now })); } catch {}
+    if (moneySel >= clients.length) moneySel = Math.max(0, clients.length - 1);
+    if (firstFetch) log(`money ok: ${clients.length} active clients, MRR $${moneyState.mrr}, ${moneyState.owedCount} owe $${moneyState.owedTotal}`);
+    try { fs.writeFileSync(MONEY_CACHE_FILE, JSON.stringify({ clients, mrr: moneyState.mrr, owedTotal: moneyState.owedTotal, owedCount: moneyState.owedCount, collectedMonth, fetchedAt: now })); } catch {}
   } catch (e) {
     moneyState.error = e.message;
     log('fetchInvoices failed:', e.message);
   }
 }
 
-function invoiceDueText(inv) {
-  if (!inv.dueMs) return { text: 'no due date', color: C.muted };
-  if (inv.daysLate > 0) return { text: `${inv.daysLate}d LATE`, color: C.red };
-  if (inv.daysLate === 0) return { text: 'due today', color: C.amber };
-  const days = -inv.daysLate;
-  return { text: `due in ${days}d`, color: days <= 3 ? C.amber : C.muted };
+function clientStatus(c) {
+  if (c.owed > 0) {
+    if (c.daysLate > 0) return { text: `owes $${c.owed.toLocaleString('en-US')} · ${c.daysLate}d late`, color: C.red };
+    if (c.dueMs) return { text: `owes $${c.owed.toLocaleString('en-US')} · due in ${Math.max(0, -c.daysLate)}d`, color: C.amber };
+    return { text: `owes $${c.owed.toLocaleString('en-US')}`, color: C.amber };
+  }
+  return { text: 'paid up', color: GREEN };
 }
 
 function openInvoices() {
@@ -1866,47 +1895,42 @@ function openInvoices() {
   execFile('/usr/bin/open', [url], (e) => { if (e) log('open invoices failed:', e.message); });
 }
 
-const MONEY_OVERVIEW_W = 190;
 function moneyInner(w) {
   const parts = [];
   parts.push(`<rect width="${w}" height="100" fill="${C.bg}"/>`);
   parts.push(invader(8, 2, 1.3, C.coral));
-  parts.push(`<text x="28" y="15" font-family="${SERIF}" font-size="14" font-weight="700" fill="${C.cream}">Money · Invoices</text>`);
+  parts.push(`<text x="28" y="15" font-family="${SERIF}" font-size="14" font-weight="700" fill="${C.cream}">Money · Clients</text>`);
+  parts.push(`<text x="150" y="15" font-family="${SANS}" font-size="12" font-weight="800" fill="${GREEN}">${esc(`MRR $${moneyState.mrr.toLocaleString('en-US')}/mo`)}</text>`);
   const headRight = moneyState.error ? `offline — ${moneyState.error}`
-    : moneyState.unpaid.length ? `${moneyState.overdue ? `${moneyState.overdue} overdue · ` : ''}tap: open invoices`
-    : 'everyone is paid up';
-  parts.push(`<text x="${w - 10}" y="14" text-anchor="end" font-family="${SANS}" font-size="11" font-weight="600" fill="${moneyState.error ? C.red : moneyState.overdue ? C.red : C.muted}">${esc(headRight)}</text>`);
+    : moneyState.owedCount ? `${moneyState.owedCount} owe $${moneyState.owedTotal.toLocaleString('en-US')} · collected $${Math.round(moneyState.collectedMonth).toLocaleString('en-US')}`
+    : `everyone paid up · collected $${Math.round(moneyState.collectedMonth).toLocaleString('en-US')} this month`;
+  parts.push(`<text x="${w - 10}" y="14" text-anchor="end" font-family="${SANS}" font-size="11" font-weight="600" fill="${moneyState.error ? C.red : moneyState.owedCount ? C.amber : C.muted}">${esc(headRight)}</text>`);
 
-  const wide = w >= 760;
-  const listX = wide ? MONEY_OVERVIEW_W : 0;
-  if (wide) {
-    parts.push(`<rect x="${CARD_MARGIN}" y="${CARD_TOP}" width="${MONEY_OVERVIEW_W - CARD_MARGIN * 2}" height="${CARD_H}" rx="10" fill="${C.card}"/>`);
-    const owed = `$${Math.round(moneyState.outstanding).toLocaleString('en-US')}`;
-    parts.push(`<text x="22" y="${CARD_TOP + 38}" font-family="${SANS}" font-size="${owed.length > 7 ? 24 : 30}" font-weight="800" fill="${moneyState.outstanding ? C.cream : GREEN}">${esc(owed)}</text>`);
-    parts.push(`<text x="22" y="${CARD_TOP + 55}" font-family="${SANS}" font-size="11" font-weight="600" fill="${moneyState.overdue ? C.red : C.muted}">${esc(moneyState.unpaid.length ? `${moneyState.unpaid.length} unpaid · ${moneyState.overdue} overdue` : 'nothing owed')}</text>`);
-    parts.push(`<text x="22" y="${CARD_TOP + 71}" font-family="${SANS}" font-size="10.5" fill="${GREEN}">${esc(`collected this month: $${Math.round(moneyState.collectedMonth).toLocaleString('en-US')}`)}</text>`);
-  }
-
-  if (!moneyState.unpaid.length) {
-    const msg = moneyState.error ? `invoices unreachable — ${moneyState.error}` : 'no unpaid invoices — clean slate';
-    parts.push(`<text x="${listX + (w - listX) / 2}" y="62" text-anchor="middle" font-family="${SANS}" font-size="13" fill="${moneyState.error ? C.muted : GREEN}">${esc(msg)}</text>`);
+  if (!moneyState.clients.length) {
+    const msg = moneyState.error ? `billing unreachable — ${moneyState.error}` : 'no active recurring clients found';
+    parts.push(`<text x="${w / 2}" y="62" text-anchor="middle" font-family="${SANS}" font-size="13" fill="${C.muted}">${esc(msg)}</text>`);
     return parts.join('');
   }
 
-  const listW = w - listX;
-  const { n, cardW } = cardGeometry(listW);
-  moneyState.unpaid.slice(0, n).forEach((inv, i) => {
-    const x = listX + CARD_MARGIN + i * (cardW + CARD_MARGIN);
-    const due = invoiceDueText(inv);
-    parts.push(`<rect x="${x}" y="${CARD_TOP}" width="${cardW}" height="${CARD_H}" rx="10" fill="${C.card}"/>`);
-    parts.push(`<rect x="${x}" y="${CARD_TOP}" width="6" height="${CARD_H}" rx="3" fill="${due.color === C.muted ? C.track : due.color}"/>`);
-    parts.push(`<text x="${x + 15}" y="${CARD_TOP + 22}" font-family="${SANS}" font-size="13" font-weight="700" fill="${C.cream}">${esc(inv.client.slice(0, 22))}</text>`);
-    parts.push(`<text x="${x + 15}" y="${CARD_TOP + 47}" font-family="${SANS}" font-size="21" font-weight="800" fill="${C.cream}">$${inv.total.toLocaleString('en-US')}</text>`);
-    parts.push(`<circle cx="${x + 20}" cy="${CARD_TOP + 63}" r="5" fill="${due.color}"/>`);
-    parts.push(`<text x="${x + 30}" y="${CARD_TOP + 67}" font-family="${SANS}" font-size="11.5" font-weight="600" fill="${due.color}">${esc(due.text)}</text>`);
+  const { n, cardW } = cardGeometry(w);
+  const pageStart = Math.floor(moneySel / n) * n;
+  const visible = moneyState.clients.slice(pageStart, pageStart + n);
+  visible.forEach((c, i) => {
+    const x = CARD_MARGIN + i * (cardW + CARD_MARGIN);
+    const st = clientStatus(c);
+    const rank = pageStart + i + 1;
+    const selected = pageStart + i === moneySel;
+    parts.push(`<rect x="${x}" y="${CARD_TOP}" width="${cardW}" height="${CARD_H}" rx="10" fill="${selected ? '#343048' : C.card}"${selected ? ` stroke="${st.color}" stroke-width="2.5"` : ''}/>`);
+    parts.push(`<rect x="${x}" y="${CARD_TOP}" width="6" height="${CARD_H}" rx="3" fill="${st.color}"/>`);
+    parts.push(`<text x="${x + 15}" y="${CARD_TOP + 21}" font-family="${SANS}" font-size="12.5" font-weight="700" fill="${selected ? '#FFFFFF' : C.cream}">${esc(`#${rank}  ${c.name.slice(0, 20)}`)}</text>`);
+    parts.push(`<text x="${x + 15}" y="${CARD_TOP + 46}" font-family="${SANS}" font-size="20" font-weight="800" fill="${C.cream}">$${c.monthly.toLocaleString('en-US')}<tspan font-size="11" fill="${C.muted}">/mo</tspan></text>`);
+    parts.push(`<circle cx="${x + 20}" cy="${CARD_TOP + 63}" r="5" fill="${st.color}"/>`);
+    parts.push(`<text x="${x + 30}" y="${CARD_TOP + 67}" font-family="${SANS}" font-size="11.5" font-weight="600" fill="${st.color}">${esc(st.text)}</text>`);
   });
-  if (moneyState.unpaid.length > n) {
-    parts.push(`<text x="${listX + listW / 2}" y="15" text-anchor="middle" font-family="${SANS}" font-size="10" fill="${C.muted}">+${moneyState.unpaid.length - n} more on the keys</text>`);
+
+  if (moneyState.clients.length > n) {
+    const pages = Math.ceil(moneyState.clients.length / n);
+    parts.push(`<text x="${w / 2}" y="15" text-anchor="middle" font-family="${SANS}" font-size="10" fill="${C.muted}">page ${Math.floor(pageStart / n) + 1}/${pages} · twist to scroll</text>`);
   }
   return parts.join('');
 }
@@ -1917,25 +1941,25 @@ function moneySlice(sliceIndex, totalSlices) {
 }
 
 function moneyKeySvg(idx) {
-  const inv = moneyState.unpaid[idx];
+  const c = moneyState.clients[idx];
   const parts = [];
   parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">`);
   parts.push(`<rect width="144" height="144" rx="14" fill="${C.bg}"/>`);
-  if (!inv) {
+  if (!c) {
     parts.push(`<text x="72" y="82" text-anchor="middle" font-family="${SANS}" font-size="22" fill="#2A2638">·</text>`);
     parts.push('</svg>');
     return parts.join('');
   }
-  const due = invoiceDueText(inv);
-  parts.push(`<rect x="0" y="0" width="8" height="144" fill="${due.color === C.muted ? C.track : due.color}"/>`);
-  const nameWords = inv.client.split(' ');
+  const st = clientStatus(c);
+  parts.push(`<rect x="0" y="0" width="8" height="144" fill="${st.color}"/>`);
+  const words = c.name.split(' ');
   const clip = (s) => (s.length > 12 ? `${s.slice(0, 11)}…` : s);
-  const lines = nameWords.length > 1 ? [clip(nameWords[0]), clip(nameWords.slice(1).join(' '))] : [clip(inv.client)];
-  parts.push(`<text x="20" y="${lines[1] ? 36 : 44}" font-family="${SANS}" font-size="15" font-weight="700" fill="${C.cream}">${esc(lines[0])}</text>`);
-  if (lines[1]) parts.push(`<text x="20" y="54" font-family="${SANS}" font-size="15" font-weight="700" fill="${C.cream}">${esc(lines[1])}</text>`);
-  parts.push(`<text x="20" y="92" font-family="${SANS}" font-size="24" font-weight="800" fill="${C.cream}">$${inv.total.toLocaleString('en-US')}</text>`);
-  parts.push(`<text x="20" y="116" font-family="${SANS}" font-size="12.5" font-weight="700" fill="${due.color}">${esc(due.text)}</text>`);
-  parts.push(`<text x="20" y="134" font-family="${SANS}" font-size="10" fill="${C.muted}">press: open invoices</text>`);
+  const lines = words.length > 1 ? [clip(words[0]), clip(words.slice(1).join(' '))] : [clip(c.name)];
+  parts.push(`<text x="20" y="${lines[1] ? 34 : 42}" font-family="${SANS}" font-size="15" font-weight="700" fill="${C.cream}">${esc(lines[0])}</text>`);
+  if (lines[1]) parts.push(`<text x="20" y="52" font-family="${SANS}" font-size="15" font-weight="700" fill="${C.cream}">${esc(lines[1])}</text>`);
+  parts.push(`<text x="20" y="90" font-family="${SANS}" font-size="24" font-weight="800" fill="${C.cream}">$${c.monthly.toLocaleString('en-US')}</text>`);
+  parts.push(`<text x="20" y="108" font-family="${SANS}" font-size="11" fill="${C.muted}">per month · #${idx + 1}</text>`);
+  parts.push(`<text x="20" y="130" font-family="${SANS}" font-size="11.5" font-weight="700" fill="${st.color}">${esc(st.text.slice(0, 20))}</text>`);
   parts.push('</svg>');
   return parts.join('');
 }
@@ -2163,15 +2187,20 @@ if (args.test !== undefined || process.argv.includes('--test') || process.argv.i
       crmAllLeads = false;
     }
     if (mock) {
-      moneyState.unpaid = [
-        { client: 'Olutunde Olufemi', title: 'AI Search Setup', total: 1000, dueMs: Date.now() - 20 * 86400_000, daysLate: 20 },
-        { client: 'Eric Torres', title: 'AI Search Setup', total: 1000, dueMs: Date.now() - 22 * 86400_000, daysLate: 22 },
-        { client: 'Naomie Chervil', title: 'Growth Retainer', total: 750, dueMs: Date.now() + 2 * 86400_000, daysLate: -2 },
+      const mkClient = (name, monthly, owed = 0, daysLate = 0) => ({ name, monthly, owed, dueMs: owed ? Date.now() - daysLate * 86400_000 : 0, daysLate });
+      moneyState.clients = [
+        mkClient('Nafees Zaman', 900),
+        mkClient('Naomie Chervil', 750, 750, 5),
+        mkClient('Darius Mills', 700),
+        mkClient('Andrea Hazel', 500, 500, -2),
+        mkClient('Rene Ruiz Collection', 400),
+        mkClient('Bellanid Nunez', 400),
+        mkClient('Eric & Andrew', 200),
       ];
-      moneyState.outstanding = 2750; moneyState.overdue = 2; moneyState.collectedMonth = 3150; moneyState.fetchedAt = Date.now();
+      moneyState.mrr = 3850; moneyState.owedTotal = 1250; moneyState.owedCount = 2; moneyState.collectedMonth = 3050; moneyState.fetchedAt = Date.now();
     } else {
       await fetchInvoices();
-      console.log('money', JSON.stringify({ unpaid: moneyState.unpaid.length, outstanding: moneyState.outstanding, overdue: moneyState.overdue, error: moneyState.error }));
+      console.log('money', JSON.stringify({ clients: moneyState.clients.length, mrr: moneyState.mrr, owed: moneyState.owedTotal, error: moneyState.error }));
     }
     png('test-money-800.png', moneyInner(800));
     keyPng('test-key-money-0.png', moneyKeySvg(0));
@@ -2570,6 +2599,12 @@ ws.on('message', (buf) => {
       if (ev.action === CRM_ACTION) {
         const maxLead = Math.max(0, crmActiveList().length - 1);
         crmSel = Math.max(0, Math.min(maxLead, crmSel + (ev.payload?.ticks > 0 ? 1 : -1)));
+        renderAll();
+        break;
+      }
+      if (ev.action === MONEY_ACTION) {
+        const maxClient = Math.max(0, moneyState.clients.length - 1);
+        moneySel = Math.max(0, Math.min(maxClient, moneySel + (ev.payload?.ticks > 0 ? 1 : -1)));
         renderAll();
         break;
       }
