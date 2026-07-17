@@ -1487,7 +1487,7 @@ function openLead(l) {
 
 function launchCrmBrief() {
   const dir = path.join(os.homedir(), '.warp', 'launch_configurations');
-  const prompt = 'Brief me on my CRM: new leads today, who needs follow-up, and recommended next moves. Use the crm skill.';
+  const prompt = 'Full CRM briefing from my miassist board: go through EVERY open lead one by one - where they are at (stage), their follow-up status, and the LAST note on each (read lead_notes). Then a short list of who to touch today and why. Use the crm skill.';
   try {
     fs.mkdirSync(dir, { recursive: true });
     const yaml = `---\nname: claude-crm\nwindows:\n  - tabs:\n      - title: claude · crm brief\n        layout:\n          cwd: ${os.homedir()}\n          commands:\n            - exec: claude "${prompt}"\n`;
@@ -1514,13 +1514,16 @@ function adsConfig() {
   };
 }
 
-const ADS_PRESETS = { today: 'Today', yesterday: 'Yesterday', last_3d: 'Last 3 Days', last_7d: 'Last 7 Days' };
-const ADS_WIN_KEYS = [ // bottom-row window buttons (4th key = Claude brief)
+const ADS_PRESETS = { today: 'Today', yesterday: 'Yesterday', last_7d: 'Last 7 Days', last_30d: 'Last 30 Days', maximum: 'All Time' };
+const ADS_WIN_KEYS = [ // bottom-row window buttons
   { preset: 'yesterday', words: ['Yesterday'] },
-  { preset: 'last_3d', words: ['Last', '3 Days'] },
   { preset: 'last_7d', words: ['Last', '7 Days'] },
+  { preset: 'last_30d', words: ['Last', '30 Days'] },
+  { preset: 'maximum', words: ['All', 'Time'] },
 ];
+const ADS_PRESET_ORDER = ['today', 'yesterday', 'last_7d', 'last_30d', 'maximum'];
 let adsPreset = 'today';
+let adsDialTimer = null;
 const ads = { rows: [], preset: 'today', error: null, fetchedAt: 0 };
 const ADS_CACHE_FILE = path.join(__dirname, '..', 'logs', 'ads-cache.json');
 try {
@@ -1590,6 +1593,21 @@ function launchAdsBrief() {
   } catch (e) { log('launchAdsBrief error:', e.message); }
 }
 
+function launchSlackSweep() {
+  const dir = path.join(os.homedir(), '.warp', 'launch_configurations');
+  let focus = [];
+  try { focus = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'accounts.json'), 'utf8')).slackFocus || []; } catch {}
+  const where = focus.length ? `Focus on these channels first: ${focus.join(', ')}.` : 'Focus on client channels and DMs.';
+  const prompt = `Sweep my Slack for what needs me, channel by channel. ${where} Skip automation and ops noise. For each: what is going on and what I owe a reply to.`;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const yaml = `---\nname: claude-slack\nwindows:\n  - tabs:\n      - title: claude · slack sweep\n        layout:\n          cwd: ${os.homedir()}\n          commands:\n            - exec: claude "${prompt}"\n`;
+    fs.writeFileSync(path.join(dir, 'claude-slack.yaml'), yaml);
+    log('launch slack sweep');
+    execFile('/usr/bin/open', ['warp://launch/claude-slack.yaml'], (e) => { if (e) log('warp launch failed:', e.message); });
+  } catch (e) { log('launchSlackSweep error:', e.message); }
+}
+
 function adsRowLine(r) {
   if (r.leads) return { text: `${r.leads} lead${r.leads > 1 ? 's' : ''} · ${money(r.cpl)} each`, color: GREEN };
   if (r.spend > 0) return { text: 'spending · no leads yet', color: C.amber };
@@ -1636,19 +1654,13 @@ function adsKeySvg(col) {
   parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">`);
   parts.push(`<rect width="144" height="144" rx="14" fill="${C.bg}"/>`);
   if (!r) {
-    if (col === 3) {
-      // the fourth key is always the door to Ads Manager itself
-      parts.push(`<text x="72" y="62" text-anchor="middle" font-family="${SANS}" font-size="19" font-weight="800" fill="${C.cream}">All Ads</text>`);
-      parts.push(`<text x="72" y="88" text-anchor="middle" font-family="${SANS}" font-size="12" fill="${C.muted}">Ads Manager</text>`);
-    } else {
-      parts.push(`<text x="72" y="82" text-anchor="middle" font-family="${SANS}" font-size="22" fill="#2A2638">·</text>`);
-    }
+    parts.push(`<text x="72" y="82" text-anchor="middle" font-family="${SANS}" font-size="22" fill="#2A2638">·</text>`);
     parts.push('</svg>');
     return parts.join('');
   }
   const line = adsRowLine(r);
   parts.push(`<rect x="0" y="0" width="8" height="144" fill="${line.color === C.muted ? C.track : line.color}"/>`);
-  parts.push(`<text x="20" y="38" font-family="${SANS}" font-size="16" font-weight="700" fill="${C.cream}">${esc(r.label)}</text>`);
+  parts.push(`<text x="20" y="38" font-family="${SANS}" font-size="${r.label.length > 12 ? 13 : 16}" font-weight="700" fill="${C.cream}">${esc(r.label)}</text>`);
   parts.push(`<text x="20" y="78" font-family="${SANS}" font-size="26" font-weight="800" fill="${C.cream}">${esc(money(r.spend))}</text>`);
   parts.push(`<text x="20" y="106" font-family="${SANS}" font-size="12" font-weight="600" fill="${line.color}">${esc(r.leads ? `${r.leads} leads · ${money(r.cpl)}` : line.text)}</text>`);
   parts.push(`<text x="20" y="132" font-family="${SANS}" font-size="11" fill="${C.muted}">press: open account</text>`);
@@ -1661,13 +1673,6 @@ function adsWinKeySvg(col) {
   const parts = [];
   parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">`);
   parts.push(`<rect width="144" height="144" rx="14" fill="${C.bg}"/>`);
-  if (col === 3) {
-    parts.push(`<text x="16" y="46" font-family="${SERIF}" font-size="30" font-weight="700" fill="${C.coral}">/</text>`);
-    parts.push(`<text x="72" y="80" text-anchor="middle" font-family="${SANS}" font-size="19" font-weight="800" fill="${C.cream}">Ads Brief</text>`);
-    parts.push(`<text x="72" y="112" text-anchor="middle" font-family="${SANS}" font-size="11" fill="${C.muted}">press: Claude status</text>`);
-    parts.push('</svg>');
-    return parts.join('');
-  }
   const win = ADS_WIN_KEYS[col];
   if (!win) { parts.push('</svg>'); return parts.join(''); }
   const active = adsPreset === win.preset;
@@ -1971,7 +1976,7 @@ function renderContext(context) {
     return;
   }
   if (info.action === SKILLKEY_ACTION) {
-    const idx = (info.row ?? 0) * 4 + (info.column ?? 0);
+    const idx = (info.settings?.base ?? 0) + (info.row ?? 0) * 4 + (info.column ?? 0);
     send({ event: 'setImage', context, payload: { image: svgToPngDataUri(skillKeySvg(idx)), target: 0 } });
     return;
   }
@@ -2107,6 +2112,7 @@ ws.on('message', (buf) => {
         controller: ev.payload?.controller || 'Keypad',
         column: ev.payload?.coordinates?.column ?? 0,
         row: ev.payload?.coordinates?.row ?? 0,
+        settings: ev.payload?.settings || {},
       });
       renderAll(); // re-render the whole group so wide panels re-stitch
       break;
@@ -2118,6 +2124,10 @@ ws.on('message', (buf) => {
     case 'touchTap':
     case 'dialDown': {
       if (COMMS[ev.action]) {
+        if (ev.event === 'touchTap' && ev.payload?.hold && ev.action.endsWith('.slack')) {
+          launchSlackSweep(); // hold the Slack card -> Claude sweeps the channels
+          break;
+        }
         execFile('/usr/bin/open', ['-b', COMMS[ev.action].bundle], () => {});
         break;
       }
@@ -2127,7 +2137,7 @@ ws.on('message', (buf) => {
       }
       if (ev.action === SKILLKEY_ACTION) {
         const info = contexts.get(ev.context) || {};
-        const idx = (info.row ?? ev.payload?.coordinates?.row ?? 0) * 4 + (info.column ?? ev.payload?.coordinates?.column ?? 0);
+        const idx = (info.settings?.base ?? 0) + (info.row ?? ev.payload?.coordinates?.row ?? 0) * 4 + (info.column ?? ev.payload?.coordinates?.column ?? 0);
         if (SKILLS[idx]) launchSkill(SKILLS[idx]);
         break;
       }
@@ -2140,7 +2150,6 @@ ws.on('message', (buf) => {
           openAdsAccount(row ? row.act : null); // empty slots (incl. "All Ads") -> Ads Manager home
           break;
         }
-        if (col === 3) { launchAdsBrief(); break; }
         const win = ADS_WIN_KEYS[col];
         if (win) {
           // press a window -> re-price the cards; press it again -> back to today
@@ -2252,6 +2261,16 @@ ws.on('message', (buf) => {
         const maxLead = Math.max(0, crmActiveList().length - 1);
         crmSel = Math.max(0, Math.min(maxLead, crmSel + (ev.payload?.ticks > 0 ? 1 : -1)));
         renderAll();
+        break;
+      }
+      if (ev.action === ADS_ACTION) {
+        // twist the knob = flip the time window (fetch settles after the spin)
+        const dir = ev.payload?.ticks > 0 ? 1 : -1;
+        const at = ADS_PRESET_ORDER.indexOf(adsPreset);
+        adsPreset = ADS_PRESET_ORDER[(at + dir + ADS_PRESET_ORDER.length) % ADS_PRESET_ORDER.length];
+        renderAll();
+        clearTimeout(adsDialTimer);
+        adsDialTimer = setTimeout(() => fetchAds().then(renderAll), 500);
         break;
       }
       if (ev.action === SESSIONS_ACTION) {
