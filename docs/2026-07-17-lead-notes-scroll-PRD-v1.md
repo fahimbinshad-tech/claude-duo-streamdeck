@@ -4,7 +4,7 @@
 - **Version:** v1
 - **Repo / branch:** claude-duo-streamdeck / main
 - **Base commit:** 9155e31
-- **Status:** NOT STARTED (data layer staged, uncommitted: per-lead note history fetch)
+- **Status:** SHIPPED
 - **Supersedes:** none
 
 ## What Fahim asked

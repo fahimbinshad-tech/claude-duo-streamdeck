@@ -1210,6 +1210,7 @@ const crm = { cats: { saved: [], worked: [], followup: [], newtoday: [] }, error
 let crmCat = 'newtoday';
 let crmMode = 'list'; // 'list' | 'detail'
 let crmSel = 0;
+let crmNoteIdx = 0; // in detail: which of the lead's notes the dial is on
 let crmNewDays = 1; // hold the New Today key to widen: 1 -> 3 -> 7 days
 let crmAllLeads = false; // press New Today AGAIN -> every lead, newest first
 function newTodayLabel() {
@@ -1341,7 +1342,7 @@ async function fetchLeads() {
     const newest = crm.cats.newtoday.length ? crm.cats.newtoday[0].createdMs : 0;
     if (crmLastSeen && newest > crmLastSeen) {
       leadAlert = { name: crm.cats.newtoday[0].name, at: now };
-      crmCat = 'newtoday'; crmAllLeads = false; crmSel = 0; crmMode = 'list'; // the deck jumps to them
+      crmCat = 'newtoday'; crmAllLeads = false; crmSel = 0; crmMode = 'list'; crmNoteIdx = 0; // the deck jumps to them
       log('NEW LEAD:', leadAlert.name);
     }
     if (newest > crmLastSeen) {
@@ -1407,15 +1408,22 @@ function crmInner(w) {
     const phone = fmtPhone(l.phone);
     const reach = phone || (l.email && l.email.length > 26 ? `${l.email.slice(0, 25)}…` : l.email) || 'no contact info';
     parts.push(`<text x="26" y="${CARD_TOP + 68}" font-family="${SANS}" font-size="14" font-weight="700" fill="${phone ? GREEN : l.email ? C.cream : C.muted}">${esc(phone ? `${reach}  ·  tap: call` : reach)}</text>`);
-    // ── right: the last note, big and readable ──
+    // ── right: notes, big and readable — the dial scrolls through them ──
     const noteX = 300;
     parts.push(`<rect x="${noteX - 16}" y="${CARD_TOP + 10}" width="1.5" height="${CARD_H - 20}" fill="#3B3554"/>`);
-    parts.push(`<text x="${noteX}" y="${CARD_TOP + 18}" font-family="${SANS}" font-size="10" font-weight="700" letter-spacing="1" fill="${C.muted}">${l.note ? `LAST NOTE · ${leadAgo(l.noteAgeMs).toUpperCase()} AGO` : 'LAST NOTE'}</text>`);
-    if (l.note) {
-      const noteLines = wrapTwo(l.note, 60);
+    const notes = l.notes || [];
+    if (notes.length) {
+      crmNoteIdx = Math.max(0, Math.min(crmNoteIdx, notes.length - 1));
+      const shown = notes[crmNoteIdx];
+      const label = notes.length > 1
+        ? `NOTE ${crmNoteIdx + 1}/${notes.length} · ${leadAgo(shown.ageMs).toUpperCase()} AGO · twist: ${crmNoteIdx < notes.length - 1 ? 'older' : 'newer'}`
+        : `LAST NOTE · ${leadAgo(shown.ageMs).toUpperCase()} AGO`;
+      parts.push(`<text x="${noteX}" y="${CARD_TOP + 18}" font-family="${SANS}" font-size="10" font-weight="700" letter-spacing="1" fill="${C.muted}">${esc(label)}</text>`);
+      const noteLines = wrapTwo(shown.body, 60);
       parts.push(`<text x="${noteX}" y="${CARD_TOP + 42}" font-family="${SANS}" font-size="14.5" fill="${C.cream}">${esc(noteLines[0])}</text>`);
       if (noteLines[1]) parts.push(`<text x="${noteX}" y="${CARD_TOP + 63}" font-family="${SANS}" font-size="14.5" fill="${C.cream}">${esc(noteLines[1])}</text>`);
     } else {
+      parts.push(`<text x="${noteX}" y="${CARD_TOP + 18}" font-family="${SANS}" font-size="10" font-weight="700" letter-spacing="1" fill="${C.muted}">LAST NOTE</text>`);
       parts.push(`<text x="${noteX}" y="${CARD_TOP + 46}" font-family="${SANS}" font-size="14" fill="${C.muted}">no notes yet — tap to open them on the board</text>`);
     }
     return parts.join('');
@@ -1802,6 +1810,8 @@ function ghlConfig() {
 
 const moneyState = { clients: [], mrr: 0, owedTotal: 0, owedCount: 0, collectedMonth: 0, error: null, fetchedAt: 0 };
 let moneySel = 0;
+let moneyMode = 'list'; // 'list' | 'detail' — tap a client for their invoice history
+let moneyScroll = 0; // which history row the dial has scrolled to
 const MONEY_CACHE_FILE = path.join(__dirname, '..', 'logs', 'money-cache.json');
 try {
   const saved = JSON.parse(fs.readFileSync(MONEY_CACHE_FILE, 'utf8'));
@@ -1835,12 +1845,13 @@ async function fetchInvoices() {
       const key = ((inv.contactDetails && (inv.contactDetails.id || inv.contactDetails.name)) || '?').toString().toLowerCase();
       const total = parseFloat(inv.total) || 0;
       const dueMs = inv.dueDate ? Date.parse(inv.dueDate) : 0;
+      if (['void', 'deleted', 'draft'].includes(inv.status)) continue;
+      const slot = (byContact[key] = byContact[key] || { owed: 0, dueMs: 0, history: [] });
+      slot.history.push({ dueMs, total, status: inv.status });
       if (inv.status === 'paid') {
         if (dueMs >= monthStart.getTime()) collectedMonth += total;
         continue;
       }
-      if (['void', 'deleted', 'draft'].includes(inv.status)) continue;
-      const slot = (byContact[key] = byContact[key] || { owed: 0, dueMs: 0 });
       slot.owed += total;
       if (!slot.dueMs || (dueMs && dueMs < slot.dueMs)) slot.dueMs = dueMs;
     }
@@ -1852,13 +1863,14 @@ async function fetchInvoices() {
       const cd = s.contactDetails || {};
       const key = ((cd.id || cd.name) || '?').toString().toLowerCase();
       const monthly = parseFloat((s.invoice && s.invoice.total) ?? s.total) || 0;
-      const debt = byContact[key] || { owed: 0, dueMs: 0 };
+      const debt = byContact[key] || { owed: 0, dueMs: 0, history: [] };
       clients.push({
         name: (cd.name || s.name || 'unknown').trim(),
         monthly,
         owed: debt.owed,
         dueMs: debt.dueMs,
         daysLate: debt.dueMs ? Math.floor((now - debt.dueMs) / 86400_000) : 0,
+        history: debt.history.sort((a, b) => b.dueMs - a.dueMs).slice(0, 24), // newest first
       });
     }
     clients.sort((a, b) => b.monthly - a.monthly); // highest payer on top
@@ -1909,6 +1921,41 @@ function moneyInner(w) {
   if (!moneyState.clients.length) {
     const msg = moneyState.error ? `billing unreachable — ${moneyState.error}` : 'no active recurring clients found';
     parts.push(`<text x="${w / 2}" y="62" text-anchor="middle" font-family="${SANS}" font-size="13" fill="${C.muted}">${esc(msg)}</text>`);
+    return parts.join('');
+  }
+  if (moneySel >= moneyState.clients.length) moneySel = moneyState.clients.length - 1;
+
+  if (moneyMode === 'detail') {
+    const c = moneyState.clients[moneySel];
+    const st = clientStatus(c);
+    parts.push(`<rect x="${CARD_MARGIN}" y="${CARD_TOP}" width="${w - CARD_MARGIN * 2}" height="${CARD_H}" rx="10" fill="#2B2740" stroke="${st.color}" stroke-width="2"/>`);
+    parts.push(`<rect x="${CARD_MARGIN}" y="${CARD_TOP}" width="8" height="${CARD_H}" rx="4" fill="${st.color}"/>`);
+    parts.push(`<text x="26" y="${CARD_TOP + 26}" font-family="${SANS}" font-size="18" font-weight="800" fill="#FFFFFF">${esc(`#${moneySel + 1}  ${c.name.slice(0, 22)}`)}</text>`);
+    parts.push(`<text x="26" y="${CARD_TOP + 50}" font-family="${SANS}" font-size="16" font-weight="800" fill="${C.cream}">$${c.monthly.toLocaleString('en-US')}<tspan font-size="10" fill="${C.muted}">/mo</tspan></text>`);
+    parts.push(`<text x="26" y="${CARD_TOP + 68}" font-family="${SANS}" font-size="12" font-weight="700" fill="${st.color}">${esc(st.text)}</text>`);
+    // invoice history: the dial scrolls these rows
+    const histX = 300;
+    parts.push(`<rect x="${histX - 16}" y="${CARD_TOP + 10}" width="1.5" height="${CARD_H - 20}" fill="#3B3554"/>`);
+    const hist = c.history || [];
+    if (!hist.length) {
+      parts.push(`<text x="${histX}" y="${CARD_TOP + 44}" font-family="${SANS}" font-size="13" fill="${C.muted}">no invoices on file yet</text>`);
+    } else {
+      moneyScroll = Math.max(0, Math.min(moneyScroll, hist.length - 1));
+      const showing = hist.slice(moneyScroll, moneyScroll + 3);
+      const label = hist.length > 3 ? `INVOICES · ${moneyScroll + 1}–${Math.min(moneyScroll + 3, hist.length)} of ${hist.length} · twist: more` : 'INVOICES';
+      parts.push(`<text x="${histX}" y="${CARD_TOP + 16}" font-family="${SANS}" font-size="9.5" font-weight="700" letter-spacing="1" fill="${C.muted}">${esc(label)}</text>`);
+      showing.forEach((inv, i) => {
+        const when = inv.dueMs ? new Date(inv.dueMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'no date';
+        const paid = inv.status === 'paid';
+        const late = !paid && inv.dueMs && inv.dueMs < Date.now();
+        const color = paid ? GREEN : late ? C.red : C.amber;
+        const word = paid ? 'paid' : late ? 'UNPAID · late' : 'unpaid';
+        const y = CARD_TOP + 34 + i * 18;
+        parts.push(`<text x="${histX}" y="${y}" font-family="${SANS}" font-size="13" font-weight="600" fill="${C.cream}">${esc(`${when} · $${inv.total.toLocaleString('en-US')}`)}</text>`);
+        parts.push(`<text x="${histX + 170}" y="${y}" font-family="${SANS}" font-size="13" font-weight="700" fill="${color}">${esc(word)}</text>`);
+      });
+    }
+    parts.push(`<text x="${w - 16}" y="${CARD_TOP + 70}" text-anchor="end" font-family="${SANS}" font-size="9.5" fill="${C.muted}">tap: open invoices · knob: back</text>`);
     return parts.join('');
   }
 
@@ -2126,6 +2173,11 @@ if (args.test !== undefined || process.argv.includes('--test') || process.argv.i
         industry: 'Dental', monthlyRevenue: '$25k-50k', dealValue: 500, website: 'https://coastaldental.com',
         note: 'Spoke with Maria, she wants the AI SEO package but needs to check with her partner first. Call back Thursday after 2pm.',
         noteAgeMs: 26 * 3600_000,
+        notes: [
+          { body: 'Spoke with Maria, she wants the AI SEO package but needs to check with her partner first. Call back Thursday after 2pm.', ageMs: 26 * 3600_000 },
+          { body: 'Left a voicemail, mentioned the quiz results and the dental case study.', ageMs: 3 * 86400_000 },
+          { body: 'Came in through the fb ad, quiz says biggest problem is no new patients.', ageMs: 4 * 86400_000 },
+        ],
         qname: name, ...extra,
       });
       crm.cats = {
@@ -2142,7 +2194,7 @@ if (args.test !== undefined || process.argv.includes('--test') || process.argv.i
         worked: [mkLead('On The Level Cleaning', 'talked', 95, { workedMs: Date.now() - 3600_000 })],
         saved: [mkLead('Palm Bay Nails', 'tried', 2 * 1440, { savedMs: Date.now() - 2 * 86400_000 })],
       };
-      crmCat = 'newtoday'; crmMode = 'list'; crmSel = 0;
+      crmCat = 'newtoday'; crmMode = 'list'; crmSel = 0; crmNoteIdx = 0;
     } else {
       await fetchLeads();
       console.log('crm', JSON.stringify({
@@ -2187,7 +2239,10 @@ if (args.test !== undefined || process.argv.includes('--test') || process.argv.i
       crmAllLeads = false;
     }
     if (mock) {
-      const mkClient = (name, monthly, owed = 0, daysLate = 0) => ({ name, monthly, owed, dueMs: owed ? Date.now() - daysLate * 86400_000 : 0, daysLate });
+      const mkClient = (name, monthly, owed = 0, daysLate = 0) => ({
+        name, monthly, owed, dueMs: owed ? Date.now() - daysLate * 86400_000 : 0, daysLate,
+        history: [0, 1, 2, 3, 4].map((i) => ({ dueMs: Date.now() - i * 30 * 86400_000 - daysLate * 86400_000, total: monthly, status: owed && i === 0 ? 'sent' : 'paid' })),
+      });
       moneyState.clients = [
         mkClient('Nafees Zaman', 900),
         mkClient('Naomie Chervil', 750, 750, 5),
@@ -2203,6 +2258,14 @@ if (args.test !== undefined || process.argv.includes('--test') || process.argv.i
       console.log('money', JSON.stringify({ clients: moneyState.clients.length, mrr: moneyState.mrr, owed: moneyState.owedTotal, error: moneyState.error }));
     }
     png('test-money-800.png', moneyInner(800));
+    if (mock) {
+      moneySel = 1; moneyMode = 'detail'; moneyScroll = 0;
+      png('test-money-detail-800.png', moneyInner(800));
+      moneySel = 0; moneyMode = 'list';
+      crmMode = 'detail'; crmNoteIdx = 1;
+      png('test-crm-note2-800.png', crmInner(800));
+      crmMode = 'list'; crmNoteIdx = 0;
+    }
     keyPng('test-key-money-0.png', moneyKeySvg(0));
     keyPng('test-key-crm.png', crmKeySvg());
     keyPng('test-key-cat-followup.png', crmCatKeySvg(2));
@@ -2411,20 +2474,20 @@ ws.on('message', (buf) => {
           const steps = [1, 3, 7];
           crmNewDays = steps[(steps.indexOf(crmNewDays) + 1) % steps.length];
           crmAllLeads = false;
-          crmMode = 'list'; crmSel = 0;
+          crmMode = 'list'; crmSel = 0; crmNoteIdx = 0;
           renderAll(); // show the new label instantly...
           fetchLeads().then(renderAll); // ...then the wider list
         } else if (cat.key === 'newtoday' && crmCat === 'newtoday') {
           // press New Today AGAIN -> flip to All Leads (newest first), and back
           crmAllLeads = !crmAllLeads;
-          crmMode = 'list'; crmSel = 0; renderAll();
+          crmMode = 'list'; crmSel = 0; crmNoteIdx = 0; renderAll();
         } else {
           crmCat = cat.key;
           if (cat.key === 'newtoday') crmAllLeads = false;
-          crmMode = 'list'; crmSel = 0; renderAll();
+          crmMode = 'list'; crmSel = 0; crmNoteIdx = 0; renderAll();
         }
       } else if (crmActiveList()[col]) {
-        crmSel = col; crmMode = 'detail'; renderAll();
+        crmSel = col; crmMode = 'detail'; crmNoteIdx = 0; renderAll();
       }
       break;
     }
@@ -2484,8 +2547,35 @@ ws.on('message', (buf) => {
         }
         break;
       }
-      if (ev.action === MONEYKEY_ACTION || ev.action === MONEY_ACTION) {
-        openInvoices(); // any press on the money page -> the GHL invoices list
+      if (ev.action === MONEYKEY_ACTION) {
+        const info = contexts.get(ev.context) || {};
+        const idx = (info.row ?? ev.payload?.coordinates?.row ?? 0) * 4 + (info.column ?? ev.payload?.coordinates?.column ?? 0);
+        if (moneyState.clients[idx]) { moneySel = idx; moneyMode = 'detail'; moneyScroll = 0; renderAll(); }
+        else openInvoices();
+        break;
+      }
+      if (ev.action === MONEY_ACTION) {
+        if (ev.event === 'dialDown') {
+          moneyMode = moneyMode === 'detail' ? 'list' : 'detail';
+          moneyScroll = 0;
+          renderAll();
+          break;
+        }
+        if (ev.event === 'touchTap' && Array.isArray(ev.payload?.tapPos)) {
+          if (ev.payload.tapPos[1] < CARD_TOP || moneyMode === 'detail') { openInvoices(); break; }
+          const group = allEncoders().filter(([, i]) => i.action === MONEY_ACTION);
+          const sliceIdx = Math.max(0, group.findIndex(([ctx]) => ctx === ev.context));
+          const w = 200 * Math.max(1, group.length);
+          const absX = ev.payload.tapPos[0] + sliceIdx * 200;
+          const { n, cardW } = cardGeometry(w);
+          const cardIdx = Math.max(0, Math.min(n - 1, Math.floor((absX - CARD_MARGIN) / (cardW + CARD_MARGIN))));
+          const pageStart = Math.floor(moneySel / n) * n;
+          if (moneyState.clients[pageStart + cardIdx]) {
+            moneySel = pageStart + cardIdx; moneyMode = 'detail'; moneyScroll = 0; renderAll();
+          } else openInvoices();
+          break;
+        }
+        openInvoices();
         break;
       }
       if (ev.action === ADS_ACTION) {
@@ -2513,6 +2603,7 @@ ws.on('message', (buf) => {
         if (ev.event === 'dialDown') {
           // knob toggles list <-> detail of the highlighted person
           crmMode = crmMode === 'detail' || !list.length ? 'list' : 'detail';
+          crmNoteIdx = 0;
           renderAll();
           break;
         }
@@ -2537,7 +2628,7 @@ ws.on('message', (buf) => {
           const { n, cardW } = cardGeometry(w);
           const cardIdx = Math.max(0, Math.min(n - 1, Math.floor((absX - CARD_MARGIN) / (cardW + CARD_MARGIN))));
           const pageStart = Math.floor(crmSel / n) * n;
-          if (list[pageStart + cardIdx]) { crmSel = pageStart + cardIdx; crmMode = 'detail'; renderAll(); }
+          if (list[pageStart + cardIdx]) { crmSel = pageStart + cardIdx; crmMode = 'detail'; crmNoteIdx = 0; renderAll(); }
           break;
         }
         openCrm('/admin/analytics/leads'); // keypad press -> the board
@@ -2597,14 +2688,28 @@ ws.on('message', (buf) => {
         break;
       }
       if (ev.action === CRM_ACTION) {
-        const maxLead = Math.max(0, crmActiveList().length - 1);
-        crmSel = Math.max(0, Math.min(maxLead, crmSel + (ev.payload?.ticks > 0 ? 1 : -1)));
+        const dir = ev.payload?.ticks > 0 ? 1 : -1;
+        if (crmMode === 'detail') {
+          // inside a lead: the dial walks their note history, newest -> oldest
+          const notes = (crmActiveList()[crmSel] || {}).notes || [];
+          crmNoteIdx = Math.max(0, Math.min(Math.max(0, notes.length - 1), crmNoteIdx + dir));
+        } else {
+          const maxLead = Math.max(0, crmActiveList().length - 1);
+          crmSel = Math.max(0, Math.min(maxLead, crmSel + dir));
+        }
         renderAll();
         break;
       }
       if (ev.action === MONEY_ACTION) {
-        const maxClient = Math.max(0, moneyState.clients.length - 1);
-        moneySel = Math.max(0, Math.min(maxClient, moneySel + (ev.payload?.ticks > 0 ? 1 : -1)));
+        const dir = ev.payload?.ticks > 0 ? 1 : -1;
+        if (moneyMode === 'detail') {
+          // inside a client: the dial walks their invoice history
+          const hist = (moneyState.clients[moneySel] || {}).history || [];
+          moneyScroll = Math.max(0, Math.min(Math.max(0, hist.length - 1), moneyScroll + dir));
+        } else {
+          const maxClient = Math.max(0, moneyState.clients.length - 1);
+          moneySel = Math.max(0, Math.min(maxClient, moneySel + dir));
+        }
         renderAll();
         break;
       }
