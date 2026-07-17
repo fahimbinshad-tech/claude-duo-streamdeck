@@ -17,5 +17,9 @@
         "act": null
       }
     ]
+  },
+  "ghl": {
+    "token": null,
+    "locationId": null
   }
 }

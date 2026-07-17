@@ -1169,6 +1169,7 @@ function crmConfig() {
     envPath: cfg.envPath || path.join(os.homedir(), 'code', 'miassist-crmboard', '.env.local'),
     baseUrl: (cfg.baseUrl || 'https://crm.miassist.studio').replace(/\/$/, ''),
     chromeProfile: cfg.chromeProfile || null,
+    smsTemplate: cfg.smsTemplate || 'Hey {name}, just saw your request come through. Do you have 5 minutes today?',
   };
 }
 
@@ -1313,15 +1314,17 @@ async function fetchLeads() {
           headers: { apikey: creds.key, Authorization: `Bearer ${creds.key}` },
         });
         if (nres.ok) {
-          const latest = {};
-          for (const n of await nres.json()) if (!latest[n.lead_id]) latest[n.lead_id] = n;
+          const byLead = {};
+          for (const n of await nres.json()) {
+            const body = String(n.body || '').replace(/\s+/g, ' ').trim();
+            if (!body) continue;
+            (byLead[n.lead_id] = byLead[n.lead_id] || []).push({ body, ageMs: now - Date.parse(n.created_at) });
+          }
           for (const list of Object.values(crm.cats)) {
             for (const l of list) {
-              const n = latest[l.id];
-              if (n) {
-                l.note = String(n.body || '').replace(/\s+/g, ' ').trim() || null;
-                l.noteAgeMs = now - Date.parse(n.created_at);
-              }
+              l.notes = (byLead[l.id] || []).slice(0, 15); // newest first
+              l.note = l.notes[0] ? l.notes[0].body : null;
+              l.noteAgeMs = l.notes[0] ? l.notes[0].ageMs : 0;
             }
           }
         }
@@ -1380,7 +1383,7 @@ function crmInner(w) {
   const alert = leadAlertFresh();
   const headRight = crm.error ? 'CRM offline'
     : alert ? `NEW: ${alert.name}`
-    : crmMode === 'detail' ? `${crmSel + 1} of ${list.length} · tap: open · knob: back`
+    : crmMode === 'detail' ? `${crmSel + 1}/${list.length} · tap name: call · hold: text · tap note: board · knob: back`
     : `${list.length} ${list.length === 1 ? 'person' : 'people'} · tap one for details`;
   parts.push(`<text x="${w - 10}" y="14" text-anchor="end" font-family="${SANS}" font-size="11" font-weight="600" fill="${crm.error ? C.red : alert ? GREEN : C.muted}">${esc(headRight)}</text>`);
 
@@ -1403,7 +1406,7 @@ function crmInner(w) {
     parts.push(`<text x="26" y="${CARD_TOP + 48}" font-family="${SANS}" font-size="12.5" font-weight="600" fill="${cat.color}">${esc(bits.join(' · '))}</text>`);
     const phone = fmtPhone(l.phone);
     const reach = phone || (l.email && l.email.length > 26 ? `${l.email.slice(0, 25)}…` : l.email) || 'no contact info';
-    parts.push(`<text x="26" y="${CARD_TOP + 68}" font-family="${SANS}" font-size="14" font-weight="700" fill="${phone || l.email ? C.cream : C.muted}">${esc(reach)}</text>`);
+    parts.push(`<text x="26" y="${CARD_TOP + 68}" font-family="${SANS}" font-size="14" font-weight="700" fill="${phone ? GREEN : l.email ? C.cream : C.muted}">${esc(phone ? `${reach}  ·  tap: call` : reach)}</text>`);
     // ── right: the last note, big and readable ──
     const noteX = 300;
     parts.push(`<rect x="${noteX - 16}" y="${CARD_TOP + 10}" width="1.5" height="${CARD_H - 20}" fill="#3B3554"/>`);
@@ -1532,6 +1535,28 @@ function openCrm(pathname) {
 function openLead(l) {
   if (!l || !l.qname) return openCrm('/admin/analytics/leads');
   openCrm(`/admin/analytics/contacts?q=${encodeURIComponent(l.qname)}`);
+}
+
+// Speed-to-lead: press = the Mac dials them (FaceTime relays through the
+// iPhone). No phone on file -> falls back to opening them on the board.
+function callLead(l) {
+  const digits = String(l && l.phone || '').replace(/[^+\d]/g, '');
+  if (!digits) return openLead(l);
+  log(`call lead: ${l.name} ${digits}`);
+  execFile('/usr/bin/open', [`tel:${digits}`], (e) => { if (e) log('call failed:', e.message); });
+}
+
+// Pre-text: opens Messages to their thread with the template ON THE CLIPBOARD
+// (Cmd+V, send). Nothing is ever sent automatically — Fahim hits send himself.
+function textLead(l) {
+  const digits = String(l && l.phone || '').replace(/[^+\d]/g, '');
+  if (!digits) return openLead(l);
+  const first = String(l.name || '').split(' ')[0].replace(/[^A-Za-z]/g, '') || 'there';
+  const msg = crmConfig().smsTemplate.replace('{name}', first);
+  log(`text lead: ${l.name} ${digits}`);
+  execFile('/bin/sh', ['-c', 'printf %s "$MSG" | pbcopy'], { env: { ...process.env, MSG: msg } }, () => {
+    execFile('/usr/bin/open', [`sms:${digits}`], (e) => { if (e) log('sms open failed:', e.message); });
+  });
 }
 
 function launchCrmBrief() {
@@ -1761,6 +1786,160 @@ function adsWinKeySvg(col) {
   return parts.join('');
 }
 
+// ═══════════════════ Money page (GHL invoices, read-only) ═══════════════════
+// Every client invoice: who owes what and when it's due. Reads the GoHighLevel
+// invoice list with the token in accounts.json (gitignored). NEVER creates or
+// sends anything.
+const MONEY_ACTION = 'com.fahim.claude-duo.money';
+const MONEYKEY_ACTION = 'com.fahim.claude-duo.moneykey';
+const MONEY_POLL_MS = 10 * 60_000;
+
+function ghlConfig() {
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'accounts.json'), 'utf8')).ghl || {}; } catch {}
+  return { token: cfg.token || null, locationId: cfg.locationId || null };
+}
+
+const moneyState = { unpaid: [], outstanding: 0, overdue: 0, collectedMonth: 0, error: null, fetchedAt: 0 };
+const MONEY_CACHE_FILE = path.join(__dirname, '..', 'logs', 'money-cache.json');
+try {
+  const saved = JSON.parse(fs.readFileSync(MONEY_CACHE_FILE, 'utf8'));
+  if (Array.isArray(saved.unpaid)) Object.assign(moneyState, saved, { error: null });
+} catch {}
+
+async function fetchInvoices() {
+  const { token, locationId } = ghlConfig();
+  if (!token || !locationId) { moneyState.error = 'no GHL config'; return; }
+  try {
+    const res = await fetch(`https://services.leadconnectorhq.com/invoices/?altId=${locationId}&altType=location&limit=100&offset=0`, {
+      headers: { Authorization: `Bearer ${token}`, Version: '2021-07-28' },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    const now = Date.now();
+    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+    const unpaid = [];
+    let collectedMonth = 0;
+    for (const inv of json.invoices || []) {
+      const total = parseFloat(inv.total) || 0;
+      const dueMs = inv.dueDate ? Date.parse(inv.dueDate) : 0;
+      if (inv.status === 'paid') {
+        if (dueMs >= monthStart.getTime()) collectedMonth += total;
+        continue;
+      }
+      if (['void', 'deleted', 'draft'].includes(inv.status)) continue;
+      unpaid.push({
+        client: ((inv.contactDetails && inv.contactDetails.name) || inv.name || 'unknown').trim(),
+        title: inv.name || '',
+        total, dueMs,
+        daysLate: dueMs ? Math.floor((now - dueMs) / 86400_000) : 0,
+      });
+    }
+    unpaid.sort((a, b) => (a.dueMs || Infinity) - (b.dueMs || Infinity)); // most overdue first
+    const firstFetch = !moneyState.fetchedAt;
+    moneyState.unpaid = unpaid;
+    moneyState.outstanding = unpaid.reduce((a, i) => a + i.total, 0);
+    moneyState.overdue = unpaid.filter((i) => i.daysLate > 0).length;
+    moneyState.collectedMonth = collectedMonth;
+    moneyState.error = null;
+    moneyState.fetchedAt = now;
+    if (firstFetch) log(`money ok: ${unpaid.length} unpaid $${moneyState.outstanding} (${moneyState.overdue} overdue), collected this month $${collectedMonth}`);
+    try { fs.writeFileSync(MONEY_CACHE_FILE, JSON.stringify({ unpaid, outstanding: moneyState.outstanding, overdue: moneyState.overdue, collectedMonth, fetchedAt: now })); } catch {}
+  } catch (e) {
+    moneyState.error = e.message;
+    log('fetchInvoices failed:', e.message);
+  }
+}
+
+function invoiceDueText(inv) {
+  if (!inv.dueMs) return { text: 'no due date', color: C.muted };
+  if (inv.daysLate > 0) return { text: `${inv.daysLate}d LATE`, color: C.red };
+  if (inv.daysLate === 0) return { text: 'due today', color: C.amber };
+  const days = -inv.daysLate;
+  return { text: `due in ${days}d`, color: days <= 3 ? C.amber : C.muted };
+}
+
+function openInvoices() {
+  const { locationId } = ghlConfig();
+  const url = `https://app.gohighlevel.com/v2/location/${locationId}/payments/invoices`;
+  log(`open invoices: ${url}`);
+  execFile('/usr/bin/open', [url], (e) => { if (e) log('open invoices failed:', e.message); });
+}
+
+const MONEY_OVERVIEW_W = 190;
+function moneyInner(w) {
+  const parts = [];
+  parts.push(`<rect width="${w}" height="100" fill="${C.bg}"/>`);
+  parts.push(invader(8, 2, 1.3, C.coral));
+  parts.push(`<text x="28" y="15" font-family="${SERIF}" font-size="14" font-weight="700" fill="${C.cream}">Money · Invoices</text>`);
+  const headRight = moneyState.error ? `offline — ${moneyState.error}`
+    : moneyState.unpaid.length ? `${moneyState.overdue ? `${moneyState.overdue} overdue · ` : ''}tap: open invoices`
+    : 'everyone is paid up';
+  parts.push(`<text x="${w - 10}" y="14" text-anchor="end" font-family="${SANS}" font-size="11" font-weight="600" fill="${moneyState.error ? C.red : moneyState.overdue ? C.red : C.muted}">${esc(headRight)}</text>`);
+
+  const wide = w >= 760;
+  const listX = wide ? MONEY_OVERVIEW_W : 0;
+  if (wide) {
+    parts.push(`<rect x="${CARD_MARGIN}" y="${CARD_TOP}" width="${MONEY_OVERVIEW_W - CARD_MARGIN * 2}" height="${CARD_H}" rx="10" fill="${C.card}"/>`);
+    const owed = `$${Math.round(moneyState.outstanding).toLocaleString('en-US')}`;
+    parts.push(`<text x="22" y="${CARD_TOP + 38}" font-family="${SANS}" font-size="${owed.length > 7 ? 24 : 30}" font-weight="800" fill="${moneyState.outstanding ? C.cream : GREEN}">${esc(owed)}</text>`);
+    parts.push(`<text x="22" y="${CARD_TOP + 55}" font-family="${SANS}" font-size="11" font-weight="600" fill="${moneyState.overdue ? C.red : C.muted}">${esc(moneyState.unpaid.length ? `${moneyState.unpaid.length} unpaid · ${moneyState.overdue} overdue` : 'nothing owed')}</text>`);
+    parts.push(`<text x="22" y="${CARD_TOP + 71}" font-family="${SANS}" font-size="10.5" fill="${GREEN}">${esc(`collected this month: $${Math.round(moneyState.collectedMonth).toLocaleString('en-US')}`)}</text>`);
+  }
+
+  if (!moneyState.unpaid.length) {
+    const msg = moneyState.error ? `invoices unreachable — ${moneyState.error}` : 'no unpaid invoices — clean slate';
+    parts.push(`<text x="${listX + (w - listX) / 2}" y="62" text-anchor="middle" font-family="${SANS}" font-size="13" fill="${moneyState.error ? C.muted : GREEN}">${esc(msg)}</text>`);
+    return parts.join('');
+  }
+
+  const listW = w - listX;
+  const { n, cardW } = cardGeometry(listW);
+  moneyState.unpaid.slice(0, n).forEach((inv, i) => {
+    const x = listX + CARD_MARGIN + i * (cardW + CARD_MARGIN);
+    const due = invoiceDueText(inv);
+    parts.push(`<rect x="${x}" y="${CARD_TOP}" width="${cardW}" height="${CARD_H}" rx="10" fill="${C.card}"/>`);
+    parts.push(`<rect x="${x}" y="${CARD_TOP}" width="6" height="${CARD_H}" rx="3" fill="${due.color === C.muted ? C.track : due.color}"/>`);
+    parts.push(`<text x="${x + 15}" y="${CARD_TOP + 22}" font-family="${SANS}" font-size="13" font-weight="700" fill="${C.cream}">${esc(inv.client.slice(0, 22))}</text>`);
+    parts.push(`<text x="${x + 15}" y="${CARD_TOP + 47}" font-family="${SANS}" font-size="21" font-weight="800" fill="${C.cream}">$${inv.total.toLocaleString('en-US')}</text>`);
+    parts.push(`<circle cx="${x + 20}" cy="${CARD_TOP + 63}" r="5" fill="${due.color}"/>`);
+    parts.push(`<text x="${x + 30}" y="${CARD_TOP + 67}" font-family="${SANS}" font-size="11.5" font-weight="600" fill="${due.color}">${esc(due.text)}</text>`);
+  });
+  if (moneyState.unpaid.length > n) {
+    parts.push(`<text x="${listX + listW / 2}" y="15" text-anchor="middle" font-family="${SANS}" font-size="10" fill="${C.muted}">+${moneyState.unpaid.length - n} more on the keys</text>`);
+  }
+  return parts.join('');
+}
+
+function moneySlice(sliceIndex, totalSlices) {
+  const inner = moneyInner(200 * totalSlices);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="${200 * sliceIndex} 0 200 100">${inner}</svg>`;
+}
+
+function moneyKeySvg(idx) {
+  const inv = moneyState.unpaid[idx];
+  const parts = [];
+  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">`);
+  parts.push(`<rect width="144" height="144" rx="14" fill="${C.bg}"/>`);
+  if (!inv) {
+    parts.push(`<text x="72" y="82" text-anchor="middle" font-family="${SANS}" font-size="22" fill="#2A2638">·</text>`);
+    parts.push('</svg>');
+    return parts.join('');
+  }
+  const due = invoiceDueText(inv);
+  parts.push(`<rect x="0" y="0" width="8" height="144" fill="${due.color === C.muted ? C.track : due.color}"/>`);
+  const nameWords = inv.client.split(' ');
+  const clip = (s) => (s.length > 12 ? `${s.slice(0, 11)}…` : s);
+  const lines = nameWords.length > 1 ? [clip(nameWords[0]), clip(nameWords.slice(1).join(' '))] : [clip(inv.client)];
+  parts.push(`<text x="20" y="${lines[1] ? 36 : 44}" font-family="${SANS}" font-size="15" font-weight="700" fill="${C.cream}">${esc(lines[0])}</text>`);
+  if (lines[1]) parts.push(`<text x="20" y="54" font-family="${SANS}" font-size="15" font-weight="700" fill="${C.cream}">${esc(lines[1])}</text>`);
+  parts.push(`<text x="20" y="92" font-family="${SANS}" font-size="24" font-weight="800" fill="${C.cream}">$${inv.total.toLocaleString('en-US')}</text>`);
+  parts.push(`<text x="20" y="116" font-family="${SANS}" font-size="12.5" font-weight="700" fill="${due.color}">${esc(due.text)}</text>`);
+  parts.push(`<text x="20" y="134" font-family="${SANS}" font-size="10" fill="${C.muted}">press: open invoices</text>`);
+  parts.push('</svg>');
+  return parts.join('');
+}
+
 // ---- session -> hosting app wiring ----
 // Match each session to its live `claude` process (by launch cwd), walk the
 // parent chain to the GUI app hosting it (Warp/Claude app/iTerm/...), so a
@@ -1983,6 +2162,19 @@ if (args.test !== undefined || process.argv.includes('--test') || process.argv.i
       keyPng('test-key-cat-all.png', crmCatKeySvg(3));
       crmAllLeads = false;
     }
+    if (mock) {
+      moneyState.unpaid = [
+        { client: 'Olutunde Olufemi', title: 'AI Search Setup', total: 1000, dueMs: Date.now() - 20 * 86400_000, daysLate: 20 },
+        { client: 'Eric Torres', title: 'AI Search Setup', total: 1000, dueMs: Date.now() - 22 * 86400_000, daysLate: 22 },
+        { client: 'Naomie Chervil', title: 'Growth Retainer', total: 750, dueMs: Date.now() + 2 * 86400_000, daysLate: -2 },
+      ];
+      moneyState.outstanding = 2750; moneyState.overdue = 2; moneyState.collectedMonth = 3150; moneyState.fetchedAt = Date.now();
+    } else {
+      await fetchInvoices();
+      console.log('money', JSON.stringify({ unpaid: moneyState.unpaid.length, outstanding: moneyState.outstanding, overdue: moneyState.overdue, error: moneyState.error }));
+    }
+    png('test-money-800.png', moneyInner(800));
+    keyPng('test-key-money-0.png', moneyKeySvg(0));
     keyPng('test-key-crm.png', crmKeySvg());
     keyPng('test-key-cat-followup.png', crmCatKeySvg(2));
     keyPng('test-key-cat-newtoday.png', crmCatKeySvg(3));
@@ -2079,6 +2271,21 @@ function renderContext(context) {
     send({ event: 'setImage', context, payload: { image: svgToPngDataUri(svg), target: 0 } });
     return;
   }
+  if (info.action === MONEY_ACTION) {
+    if (info.controller === 'Encoder') {
+      const group = allEncoders().filter(([, i]) => i.action === MONEY_ACTION);
+      const idx = Math.max(0, group.findIndex(([ctx]) => ctx === context));
+      send({ event: 'setFeedback', context, payload: { canvas: svgToPngDataUri(moneySlice(idx, Math.max(1, group.length))) } });
+    } else {
+      send({ event: 'setImage', context, payload: { image: svgToPngDataUri(moneyKeySvg(0)), target: 0 } });
+    }
+    return;
+  }
+  if (info.action === MONEYKEY_ACTION) {
+    const idx = (info.row ?? 0) * 4 + (info.column ?? 0);
+    send({ event: 'setImage', context, payload: { image: svgToPngDataUri(moneyKeySvg(idx)), target: 0 } });
+    return;
+  }
   if (info.controller === 'Encoder') {
     const everyone = allEncoders().filter(([, i]) => i.action !== SESSIONS_ACTION && i.action !== CRM_ACTION && i.action !== CRMLEAD_ACTION);
     const distinct = new Set(everyone.map(([, i]) => i.action));
@@ -2140,6 +2347,8 @@ ws.on('open', () => {
   setInterval(() => fetchLeads().then(renderAll), CRM_POLL_MS);
   fetchAds().then(renderAll);
   setInterval(() => fetchAds().then(renderAll), ADS_POLL_MS);
+  fetchInvoices().then(renderAll);
+  setInterval(() => fetchInvoices().then(renderAll), MONEY_POLL_MS);
   setInterval(() => {
     scanSessions();
     enrichSessionApps(renderAll);
@@ -2246,6 +2455,10 @@ ws.on('message', (buf) => {
         }
         break;
       }
+      if (ev.action === MONEYKEY_ACTION || ev.action === MONEY_ACTION) {
+        openInvoices(); // any press on the money page -> the GHL invoices list
+        break;
+      }
       if (ev.action === ADS_ACTION) {
         if (ev.event === 'touchTap' && Array.isArray(ev.payload?.tapPos)) {
           if (ev.payload.hold) { launchAdsBrief(); break; }
@@ -2275,13 +2488,23 @@ ws.on('message', (buf) => {
           break;
         }
         if (ev.event === 'touchTap' && Array.isArray(ev.payload?.tapPos)) {
-          if (ev.payload.hold) { launchCrmBrief(); break; }
+          if (ev.payload.hold) {
+            // hold in detail = pre-filled text to that person; hold in list = full brief
+            if (crmMode === 'detail' && list[crmSel]) textLead(list[crmSel]);
+            else launchCrmBrief();
+            break;
+          }
           const group = allEncoders().filter(([, i]) => i.action === CRM_ACTION);
           const sliceIdx = Math.max(0, group.findIndex(([ctx]) => ctx === ev.context));
           const w = 200 * Math.max(1, group.length);
           const absX = ev.payload.tapPos[0] + sliceIdx * 200;
           if (ev.payload.tapPos[1] < CARD_TOP) { openCrm('/admin/analytics/leads'); break; } // header tap -> board
-          if (crmMode === 'detail') { openLead(list[crmSel]); break; } // detail tap -> that person on the board
+          if (crmMode === 'detail') {
+            // left side (their name/number) = CALL them; note side = open on the board
+            if (absX < 290) callLead(list[crmSel]);
+            else openLead(list[crmSel]);
+            break;
+          }
           const { n, cardW } = cardGeometry(w);
           const cardIdx = Math.max(0, Math.min(n - 1, Math.floor((absX - CARD_MARGIN) / (cardW + CARD_MARGIN))));
           const pageStart = Math.floor(crmSel / n) * n;

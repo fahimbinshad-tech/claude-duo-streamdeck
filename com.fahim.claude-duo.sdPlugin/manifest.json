@@ -259,6 +259,44 @@
           "Image": "imgs/ads"
         }
       ]
+    },
+    {
+      "UUID": "com.fahim.claude-duo.money",
+      "Name": "Money \u00b7 Invoices",
+      "Tooltip": "Every client invoice \u2014 who owes what and when it's due (read-only from GoHighLevel). Any press opens the invoices list",
+      "Icon": "imgs/money",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "layouts/usage-strip.json",
+        "StackColor": "#4ADE80",
+        "Icon": "imgs/money",
+        "TriggerDescription": {
+          "Touch": "Open invoices",
+          "Push": "Open invoices"
+        }
+      },
+      "States": [
+        {
+          "Image": "imgs/money"
+        }
+      ]
+    },
+    {
+      "UUID": "com.fahim.claude-duo.moneykey",
+      "Name": "Invoice Key",
+      "Tooltip": "One unpaid invoice per key (most overdue first) \u2014 press opens the invoices list",
+      "Icon": "imgs/money",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/money"
+        }
+      ]
     }
   ]
 }
