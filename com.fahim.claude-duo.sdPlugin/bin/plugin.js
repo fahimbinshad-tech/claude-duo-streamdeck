@@ -1198,11 +1198,21 @@ let crmCat = 'newtoday';
 let crmMode = 'list'; // 'list' | 'detail'
 let crmSel = 0;
 let crmNewDays = 1; // hold the New Today key to widen: 1 -> 3 -> 7 days
-function newTodayLabel() { return crmNewDays === 1 ? 'New Today' : `New · ${crmNewDays} Days`; }
-function newTodayWords() { return crmNewDays === 1 ? ['New', 'Today'] : ['New', `${crmNewDays} Days`]; }
+let crmAllLeads = false; // press New Today AGAIN -> every lead, newest first
+function newTodayLabel() {
+  if (crmAllLeads) return 'All Leads';
+  return crmNewDays === 1 ? 'New Today' : `New · ${crmNewDays} Days`;
+}
+function newTodayWords() {
+  if (crmAllLeads) return ['All', 'Leads'];
+  return crmNewDays === 1 ? ['New', 'Today'] : ['New', `${crmNewDays} Days`];
+}
 let leadAlert = null; // { name, at } — a brand-new lead just landed
 
-function crmActiveList() { return crm.cats[crmCat] || []; }
+function crmActiveList() {
+  if (crmCat === 'newtoday' && crmAllLeads) return crm.cats.all || [];
+  return crm.cats[crmCat] || [];
+}
 
 // remember the newest lead we've seen so a restart never re-announces old leads
 const CRM_STATE_FILE = path.join(__dirname, '..', 'logs', 'crm-state.json');
@@ -1247,9 +1257,9 @@ function mapLead(l, now) {
   };
 }
 
-async function crmQuery(creds, extra) {
+async function crmQuery(creds, extra, limit = 12) {
   const base = 'select=id,first_name,last_name,business_name,email,phone,stage,temperature,created_at,follow_up_at,saved_at,last_worked_at,utm_source'
-    + '&disqualified=not.is.true&stage=not.in.(won,lost)&limit=12';
+    + `&disqualified=not.is.true&stage=not.in.(won,lost)&limit=${limit}`;
   const res = await fetch(`${creds.url}/rest/v1/leads?${base}&${extra}`, {
     headers: { apikey: creds.key, Authorization: `Bearer ${creds.key}` },
   });
@@ -1265,17 +1275,19 @@ async function fetchLeads() {
   const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
   const endOfDay = new Date(); endOfDay.setHours(23, 59, 59, 999);
   try {
-    const [saved, worked, followup, newtoday] = await Promise.all([
+    const [saved, worked, followup, newtoday, all] = await Promise.all([
       crmQuery(creds, 'saved_at=not.is.null&order=saved_at.desc'),
       crmQuery(creds, 'last_worked_at=not.is.null&order=last_worked_at.desc'),
       crmQuery(creds, `follow_up_at=lte.${encodeURIComponent(endOfDay.toISOString())}&order=follow_up_at.asc`),
       crmQuery(creds, `created_at=gte.${encodeURIComponent((crmNewDays === 1 ? midnight : new Date(now - crmNewDays * 86400_000)).toISOString())}&order=created_at.desc`),
+      crmQuery(creds, 'order=created_at.desc', 60),
     ]);
     crm.cats = {
       saved: saved.map((l) => mapLead(l, now)),
       worked: worked.map((l) => mapLead(l, now)),
       followup: followup.map((l) => mapLead(l, now)),
       newtoday: newtoday.map((l) => mapLead(l, now)),
+      all: all.map((l) => mapLead(l, now)),
     };
     crm.error = null;
     crm.fetchedAt = now;
@@ -1288,7 +1300,7 @@ async function fetchLeads() {
     const newest = crm.cats.newtoday.length ? crm.cats.newtoday[0].createdMs : 0;
     if (crmLastSeen && newest > crmLastSeen) {
       leadAlert = { name: crm.cats.newtoday[0].name, at: now };
-      crmCat = 'newtoday'; crmSel = 0; crmMode = 'list'; // the deck jumps to them
+      crmCat = 'newtoday'; crmAllLeads = false; crmSel = 0; crmMode = 'list'; // the deck jumps to them
       log('NEW LEAD:', leadAlert.name);
     }
     if (newest > crmLastSeen) {
@@ -1314,6 +1326,7 @@ function catText(l) {
     const over = Date.now() - l.followMs;
     return over > 3600_000 ? `was due ${leadAgo(over)} ago` : 'due today';
   }
+  if (crmAllLeads) return `${leadAgo(l.ageMs)} ago · ${stageLabel(l.stage)}`;
   const src = srcWord(l.src);
   return `${leadAgo(l.ageMs)} ago${src ? ` · ${src}` : ''}`;
 }
@@ -1409,7 +1422,7 @@ function crmCatKeySvg(col) {
   parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">`);
   if (!cat) { parts.push(`<rect width="144" height="144" rx="14" fill="${C.bg}"/></svg>`); return parts.join(''); }
   const active = crmCat === cat.key;
-  const count = (crm.cats[cat.key] || []).length;
+  const count = (cat.key === 'newtoday' && crmAllLeads ? crm.cats.all || [] : crm.cats[cat.key] || []).length;
   parts.push(`<rect width="144" height="144" rx="14" fill="${C.bg}"/>`);
   if (active) parts.push(`<rect x="3" y="3" width="138" height="138" rx="12" fill="${cat.color}" opacity="0.16"/>`);
   parts.push(`<rect x="3" y="3" width="138" height="138" rx="12" fill="none" stroke="${active ? '#FFFFFF' : cat.color}" stroke-width="${active ? 3 : 2}"${active ? '' : ' opacity="0.55"'}/>`);
@@ -1419,7 +1432,10 @@ function crmCatKeySvg(col) {
     parts.push(`<text x="72" y="${y0 + i * 22}" text-anchor="middle" font-family="${SANS}" font-size="18" font-weight="800" fill="${active ? '#FFFFFF' : C.cream}">${esc(word)}</text>`);
   });
   parts.push(`<text x="72" y="118" text-anchor="middle" font-family="${SANS}" font-size="38" font-weight="800" fill="${cat.color}">${count}</text>`);
-  if (cat.key === 'newtoday') parts.push(`<text x="72" y="135" text-anchor="middle" font-family="${SANS}" font-size="9" fill="${C.muted}">hold: more days</text>`);
+  if (cat.key === 'newtoday') {
+    const hint = crmAllLeads ? 'press: back to today' : 'again: all · hold: days';
+    parts.push(`<text x="72" y="135" text-anchor="middle" font-family="${SANS}" font-size="9" fill="${C.muted}">${esc(hint)}</text>`);
+  }
   parts.push(`</svg>`);
   return parts.join('');
 }
@@ -1498,7 +1514,14 @@ function adsConfig() {
   };
 }
 
-const ads = { rows: [], error: null, fetchedAt: 0 };
+const ADS_PRESETS = { today: 'Today', yesterday: 'Yesterday', last_3d: 'Last 3 Days', last_7d: 'Last 7 Days' };
+const ADS_WIN_KEYS = [ // bottom-row window buttons (4th key = Claude brief)
+  { preset: 'yesterday', words: ['Yesterday'] },
+  { preset: 'last_3d', words: ['Last', '3 Days'] },
+  { preset: 'last_7d', words: ['Last', '7 Days'] },
+];
+let adsPreset = 'today';
+const ads = { rows: [], preset: 'today', error: null, fetchedAt: 0 };
 const ADS_CACHE_FILE = path.join(__dirname, '..', 'logs', 'ads-cache.json');
 try {
   const saved = JSON.parse(fs.readFileSync(ADS_CACHE_FILE, 'utf8'));
@@ -1517,8 +1540,9 @@ async function fetchAds() {
   if (!accounts.length || !token) { ads.error = accounts.length ? 'no ads token' : 'no ads accounts set up'; return; }
   const rows = [];
   try {
+    const preset = adsPreset;
     for (const a of accounts) {
-      const res = await fetch(`https://graph.facebook.com/v21.0/act_${a.act}/insights?date_preset=today&fields=spend,actions&access_token=${token}`);
+      const res = await fetch(`https://graph.facebook.com/v21.0/act_${a.act}/insights?date_preset=${preset}&fields=spend,actions&access_token=${token}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       const d = (json.data && json.data[0]) || {};
@@ -1533,6 +1557,7 @@ async function fetchAds() {
     }
     const firstAdsFetch = !ads.fetchedAt;
     ads.rows = rows;
+    ads.preset = preset;
     ads.error = null;
     ads.fetchedAt = Date.now();
     if (firstAdsFetch) log(`ads ok: ${rows.map((r) => `${r.label}=$${r.spend.toFixed(2)}/${r.leads}L`).join(' ')}`);
@@ -1575,11 +1600,12 @@ function adsInner(w) {
   const parts = [];
   parts.push(`<rect width="${w}" height="100" fill="${C.bg}"/>`);
   parts.push(invader(8, 2, 1.3, C.coral));
-  parts.push(`<text x="28" y="15" font-family="${SERIF}" font-size="14" font-weight="700" fill="${C.cream}">Ads · Today</text>`);
+  parts.push(`<text x="28" y="15" font-family="${SERIF}" font-size="14" font-weight="700" fill="${C.cream}">Ads · ${esc(ADS_PRESETS[ads.preset] || 'Today')}</text>`);
   const total = ads.rows.reduce((a, r) => a + r.spend, 0);
+  const stale = adsPreset !== ads.preset ? 'loading…' : null;
   const headRight = ads.error ? `ads offline — ${ads.error}`
-    : ads.rows.length ? `${money(total)} total · tap: open account · hold: brief`
-    : 'add accounts in accounts.json';
+    : stale || (ads.rows.length ? `${money(total)} total · tap: open account · hold: brief`
+    : 'add accounts in accounts.json');
   parts.push(`<text x="${w - 10}" y="14" text-anchor="end" font-family="${SANS}" font-size="11" font-weight="600" fill="${ads.error ? C.red : C.muted}">${esc(headRight)}</text>`);
   if (!ads.rows.length) {
     parts.push(`<text x="${w / 2}" y="62" text-anchor="middle" font-family="${SANS}" font-size="13" fill="${C.muted}">no ad accounts configured</text>`);
@@ -1626,6 +1652,32 @@ function adsKeySvg(col) {
   parts.push(`<text x="20" y="78" font-family="${SANS}" font-size="26" font-weight="800" fill="${C.cream}">${esc(money(r.spend))}</text>`);
   parts.push(`<text x="20" y="106" font-family="${SANS}" font-size="12" font-weight="600" fill="${line.color}">${esc(r.leads ? `${r.leads} leads · ${money(r.cpl)}` : line.text)}</text>`);
   parts.push(`<text x="20" y="132" font-family="${SANS}" font-size="11" fill="${C.muted}">press: open account</text>`);
+  parts.push('</svg>');
+  return parts.join('');
+}
+
+// Bottom-row keys on the ads page: time-window buttons + the brief key
+function adsWinKeySvg(col) {
+  const parts = [];
+  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">`);
+  parts.push(`<rect width="144" height="144" rx="14" fill="${C.bg}"/>`);
+  if (col === 3) {
+    parts.push(`<text x="16" y="46" font-family="${SERIF}" font-size="30" font-weight="700" fill="${C.coral}">/</text>`);
+    parts.push(`<text x="72" y="80" text-anchor="middle" font-family="${SANS}" font-size="19" font-weight="800" fill="${C.cream}">Ads Brief</text>`);
+    parts.push(`<text x="72" y="112" text-anchor="middle" font-family="${SANS}" font-size="11" fill="${C.muted}">press: Claude status</text>`);
+    parts.push('</svg>');
+    return parts.join('');
+  }
+  const win = ADS_WIN_KEYS[col];
+  if (!win) { parts.push('</svg>'); return parts.join(''); }
+  const active = adsPreset === win.preset;
+  if (active) parts.push(`<rect x="3" y="3" width="138" height="138" rx="12" fill="${C.coral}" opacity="0.16"/>`);
+  parts.push(`<rect x="3" y="3" width="138" height="138" rx="12" fill="none" stroke="${active ? '#FFFFFF' : C.coral}" stroke-width="${active ? 3 : 2}"${active ? '' : ' opacity="0.55"'}/>`);
+  const y0 = win.words.length > 1 ? 58 : 70;
+  win.words.forEach((word, i) => {
+    parts.push(`<text x="72" y="${y0 + i * 22}" text-anchor="middle" font-family="${SANS}" font-size="18" font-weight="800" fill="${active ? '#FFFFFF' : C.cream}">${esc(word)}</text>`);
+  });
+  parts.push(`<text x="72" y="122" text-anchor="middle" font-family="${SANS}" font-size="9" fill="${C.muted}">${active ? 'press: back to today' : 'press: switch'}</text>`);
   parts.push('</svg>');
   return parts.join('');
 }
@@ -1837,6 +1889,15 @@ if (args.test !== undefined || process.argv.includes('--test') || process.argv.i
     png('test-ads-800.png', adsInner(800));
     keyPng('test-key-ads-0.png', adsKeySvg(0));
     keyPng('test-key-ads-3.png', adsKeySvg(3));
+    keyPng('test-key-adswin-1.png', adsWinKeySvg(1));
+    keyPng('test-key-adswin-3.png', adsWinKeySvg(3));
+    if (mock) {
+      crm.cats.all = [...crm.cats.newtoday, ...crm.cats.followup, ...crm.cats.worked, ...crm.cats.saved];
+      crmAllLeads = true; crmSel = 0; crmMode = 'list';
+      png('test-crm-all-800.png', crmInner(800));
+      keyPng('test-key-cat-all.png', crmCatKeySvg(3));
+      crmAllLeads = false;
+    }
     keyPng('test-key-crm.png', crmKeySvg());
     keyPng('test-key-cat-followup.png', crmCatKeySvg(2));
     keyPng('test-key-cat-newtoday.png', crmCatKeySvg(3));
@@ -1925,7 +1986,8 @@ function renderContext(context) {
     return;
   }
   if (info.action === ADSKEY_ACTION) {
-    send({ event: 'setImage', context, payload: { image: svgToPngDataUri(adsKeySvg(info.column ?? 0)), target: 0 } });
+    const svg = (info.row ?? 0) === 0 ? adsKeySvg(info.column ?? 0) : adsWinKeySvg(info.column ?? 0);
+    send({ event: 'setImage', context, payload: { image: svgToPngDataUri(svg), target: 0 } });
     return;
   }
   if (info.controller === 'Encoder') {
@@ -2021,11 +2083,18 @@ ws.on('message', (buf) => {
           // hold New Today -> widen the window: today -> 3 days -> 7 days
           const steps = [1, 3, 7];
           crmNewDays = steps[(steps.indexOf(crmNewDays) + 1) % steps.length];
+          crmAllLeads = false;
           crmMode = 'list'; crmSel = 0;
           renderAll(); // show the new label instantly...
           fetchLeads().then(renderAll); // ...then the wider list
+        } else if (cat.key === 'newtoday' && crmCat === 'newtoday') {
+          // press New Today AGAIN -> flip to All Leads (newest first), and back
+          crmAllLeads = !crmAllLeads;
+          crmMode = 'list'; crmSel = 0; renderAll();
         } else {
-          crmCat = cat.key; crmMode = 'list'; crmSel = 0; renderAll();
+          crmCat = cat.key;
+          if (cat.key === 'newtoday') crmAllLeads = false;
+          crmMode = 'list'; crmSel = 0; renderAll();
         }
       } else if (crmActiveList()[col]) {
         crmSel = col; crmMode = 'detail'; renderAll();
@@ -2063,9 +2132,22 @@ ws.on('message', (buf) => {
         break;
       }
       if (ev.action === ADSKEY_ACTION) {
-        const col = contexts.get(ev.context)?.column ?? ev.payload?.coordinates?.column ?? 0;
-        const row = ads.rows[col];
-        openAdsAccount(row ? row.act : null); // empty slots (incl. "All Ads") -> Ads Manager home
+        const info = contexts.get(ev.context) || {};
+        const keyRow = info.row ?? ev.payload?.coordinates?.row ?? 0;
+        const col = info.column ?? ev.payload?.coordinates?.column ?? 0;
+        if (keyRow === 0) {
+          const row = ads.rows[col];
+          openAdsAccount(row ? row.act : null); // empty slots (incl. "All Ads") -> Ads Manager home
+          break;
+        }
+        if (col === 3) { launchAdsBrief(); break; }
+        const win = ADS_WIN_KEYS[col];
+        if (win) {
+          // press a window -> re-price the cards; press it again -> back to today
+          adsPreset = adsPreset === win.preset ? 'today' : win.preset;
+          renderAll(); // highlight + "loading…" instantly
+          fetchAds().then(renderAll);
+        }
         break;
       }
       if (ev.action === ADS_ACTION) {

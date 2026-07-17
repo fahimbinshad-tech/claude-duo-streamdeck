@@ -4,7 +4,7 @@ Your Claude life on a Stream Deck + touch bar: **both accounts' usage**, **live 
 
 ![Full-bar dashboard](docs/full-bar-dashboard.png)
 
-## The four touch-bar pages (swipe to switch)
+## The five touch-bar pages (swipe to switch)
 
 ### Page 1 — Usage dashboard
 - Both Claude accounts side by side: Current (5h) % and Weekly % with bars and "Resets in…" timers. Amber at 70%, red at 90%
@@ -22,10 +22,16 @@ Your Claude life on a Stream Deck + touch bar: **both accounts' usage**, **live 
 - **Skills dial**: twist through your most-used slash commands, press to run it in a fresh Warp tab
 
 ### Page 4 — CRM leads (speed-to-lead on hardware)
-- Live leads from your own CRM (Supabase): overview panel (new today, who needs follow-up) + lead cards colored by temperature/stage, overdue follow-ups first
-- **Twist** = scroll · **tap a lead / press the knob** = that lead opens on the board · **tap the overview** = the board · **hold** = a fresh Claude terminal briefs you on the whole pipeline
-- The **8 physical keys** each hold a lead — press one, you're looking at them
-- **New-lead alert**: the moment a lead lands, the panel pulses green, the CRM key flips to "new lead!", and Clawd announces the name on page 1. Lead in, tap, call — nobody has this
+- **Top 4 keys** = category buttons with live counts, matching the board's own views: Saved · Recently Worked · Follow Up Today · New Today. **Hold New Today** widens it (today → 3 → 7 days); **press it again** for All Leads, every lead newest first
+- **Bottom 4 keys** = the first four people of the active category
+- **Strip** = those people as cards → tap one = full detail (phone, email, stage, source) → tap again = they open on your CRM in the browser · knob = back · twist = scroll · hold = Claude pipeline briefing
+- **New-lead alert**: the moment a lead lands, the page jumps to them, the CRM key flips to "new lead!", and Clawd announces the name on page 1. Lead in, tap, call — nobody has this
+
+### Page 5 — Ads (read-only)
+- Today's **spend / leads / cost-per-lead** per Meta ad account (Graph API insights, polled gently every 15 min)
+- **Press an account key or card** = that exact account opens in Ads Manager · 4th key = all accounts
+- **Bottom keys** flip the window: Yesterday · Last 3 Days · Last 7 Days (press again = back to today) + an **Ads Brief** key that opens a read-only Claude status in Warp
+- This page never writes to any ad account
 
 ## Install
 
