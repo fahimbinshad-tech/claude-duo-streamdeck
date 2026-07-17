@@ -27,7 +27,19 @@ const FONT_OPTS = {
   ],
   defaultFontFamily: 'Helvetica',
 };
+// Memoize: the 450ms mascot heartbeat re-renders every visible key; static
+// faces (skills, category buttons, ads keys) produce identical SVG each tick,
+// so skip the expensive re-encode for those.
+const pngCache = new Map();
 function svgToPngDataUri(svg) {
+  const hit = pngCache.get(svg);
+  if (hit) return hit;
+  if (pngCache.size > 300) pngCache.clear();
+  const out = rawSvgToPngDataUri(svg);
+  pngCache.set(svg, out);
+  return out;
+}
+function rawSvgToPngDataUri(svg) {
   const png = new Resvg(svg, { font: FONT_OPTS }).render().asPng();
   return 'data:image/png;base64,' + Buffer.from(png).toString('base64');
 }
@@ -1681,13 +1693,19 @@ function adsWinKeySvg(col) {
   const win = ADS_WIN_KEYS[col];
   if (!win) { parts.push('</svg>'); return parts.join(''); }
   const active = adsPreset === win.preset;
-  if (active) parts.push(`<rect x="3" y="3" width="138" height="138" rx="12" fill="${C.coral}" opacity="0.16"/>`);
-  parts.push(`<rect x="3" y="3" width="138" height="138" rx="12" fill="none" stroke="${active ? '#FFFFFF' : C.coral}" stroke-width="${active ? 3 : 2}"${active ? '' : ' opacity="0.55"'}/>`);
-  const y0 = win.words.length > 1 ? 58 : 70;
+  if (active) {
+    // pressed state = the whole key lights up coral, no squinting required
+    parts.push(`<rect x="3" y="3" width="138" height="138" rx="12" fill="${C.coral}"/>`);
+  } else {
+    parts.push(`<rect x="3" y="3" width="138" height="138" rx="12" fill="none" stroke="${C.coral}" stroke-width="2" opacity="0.55"/>`);
+  }
+  const ink = active ? '#17151E' : C.cream;
+  const y0 = win.words.length > 1 ? 52 : 64;
   win.words.forEach((word, i) => {
-    parts.push(`<text x="72" y="${y0 + i * 22}" text-anchor="middle" font-family="${SANS}" font-size="18" font-weight="800" fill="${active ? '#FFFFFF' : C.cream}">${esc(word)}</text>`);
+    parts.push(`<text x="72" y="${y0 + i * 22}" text-anchor="middle" font-family="${SANS}" font-size="18" font-weight="800" fill="${ink}">${esc(word)}</text>`);
   });
-  parts.push(`<text x="72" y="122" text-anchor="middle" font-family="${SANS}" font-size="9" fill="${C.muted}">${active ? 'press: back to today' : 'press: switch'}</text>`);
+  if (active) parts.push(`<text x="72" y="104" text-anchor="middle" font-family="${SANS}" font-size="12" font-weight="700" fill="#17151E">SHOWING NOW</text>`);
+  parts.push(`<text x="72" y="126" text-anchor="middle" font-family="${SANS}" font-size="10" fill="${active ? '#3A3226' : C.muted}">${active ? 'press: back to today' : 'press: switch'}</text>`);
   parts.push('</svg>');
   return parts.join('');
 }
@@ -1901,6 +1919,9 @@ if (args.test !== undefined || process.argv.includes('--test') || process.argv.i
     keyPng('test-key-ads-3.png', adsKeySvg(3));
     keyPng('test-key-adswin-1.png', adsWinKeySvg(1));
     keyPng('test-key-adswin-3.png', adsWinKeySvg(3));
+    adsPreset = 'yesterday';
+    keyPng('test-key-adswin-active.png', adsWinKeySvg(0));
+    adsPreset = 'today';
     if (mock) {
       crm.cats.all = [...crm.cats.newtoday, ...crm.cats.followup, ...crm.cats.worked, ...crm.cats.saved];
       crmAllLeads = true; crmSel = 0; crmMode = 'list';
@@ -1982,6 +2003,10 @@ function renderContext(context) {
   }
   if (info.action === SKILLKEY_ACTION) {
     const idx = (info.settings?.base ?? 0) + (info.row ?? 0) * 4 + (info.column ?? 0);
+    if (info.settings?.base !== undefined && !info.loggedOnce) {
+      info.loggedOnce = true;
+      log(`skill folder key col=${info.column} row=${info.row} base=${info.settings.base} idx=${idx} -> ${SKILLS[idx] || 'EMPTY'}`);
+    }
     send({ event: 'setImage', context, payload: { image: svgToPngDataUri(skillKeySvg(idx)), target: 0 } });
     return;
   }
