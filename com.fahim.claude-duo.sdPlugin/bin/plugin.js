@@ -1265,12 +1265,15 @@ function mapLead(l, now) {
     workedMs: l.last_worked_at ? Date.parse(l.last_worked_at) : 0,
     due: followMs > 0 && followMs <= now,
     phone: l.phone || null, email: l.email || null, src: l.utm_source || null,
+    industry: l.industry || null, monthlyRevenue: l.monthly_revenue || null,
+    dealValue: l.deal_value || null, website: l.website || null,
+    note: null, noteAgeMs: 0,
     qname: l.business_name || [l.first_name, l.last_name].filter(Boolean).join(' ').trim() || l.email || l.phone || '',
   };
 }
 
 async function crmQuery(creds, extra, limit = 12) {
-  const base = 'select=id,first_name,last_name,business_name,email,phone,stage,temperature,created_at,follow_up_at,saved_at,last_worked_at,utm_source'
+  const base = 'select=id,first_name,last_name,business_name,email,phone,stage,temperature,created_at,follow_up_at,saved_at,last_worked_at,utm_source,industry,monthly_revenue,deal_value,website'
     + `&disqualified=not.is.true&stage=not.in.(won,lost)&limit=${limit}`;
   const res = await fetch(`${creds.url}/rest/v1/leads?${base}&${extra}`, {
     headers: { apikey: creds.key, Authorization: `Bearer ${creds.key}` },
@@ -1301,6 +1304,29 @@ async function fetchLeads() {
       newtoday: newtoday.map((l) => mapLead(l, now)),
       all: all.map((l) => mapLead(l, now)),
     };
+    // join each lead's most recent note (its own try — a notes hiccup never
+    // blanks the board)
+    try {
+      const ids = [...new Set(Object.values(crm.cats).flat().map((l) => l.id))].slice(0, 90);
+      if (ids.length) {
+        const nres = await fetch(`${creds.url}/rest/v1/lead_notes?select=lead_id,body,created_at&lead_id=in.(${ids.join(',')})&order=created_at.desc&limit=300`, {
+          headers: { apikey: creds.key, Authorization: `Bearer ${creds.key}` },
+        });
+        if (nres.ok) {
+          const latest = {};
+          for (const n of await nres.json()) if (!latest[n.lead_id]) latest[n.lead_id] = n;
+          for (const list of Object.values(crm.cats)) {
+            for (const l of list) {
+              const n = latest[l.id];
+              if (n) {
+                l.note = String(n.body || '').replace(/\s+/g, ' ').trim() || null;
+                l.noteAgeMs = now - Date.parse(n.created_at);
+              }
+            }
+          }
+        }
+      }
+    } catch (e) { log('notes join failed:', e.message); }
     crm.error = null;
     crm.fetchedAt = now;
     if (crmFirstFetch) {
@@ -1369,15 +1395,42 @@ function crmInner(w) {
     const l = list[crmSel];
     parts.push(`<rect x="${CARD_MARGIN}" y="${CARD_TOP}" width="${w - CARD_MARGIN * 2}" height="${CARD_H}" rx="10" fill="#2B2740" stroke="${cat.color}" stroke-width="2"/>`);
     parts.push(`<rect x="${CARD_MARGIN}" y="${CARD_TOP}" width="8" height="${CARD_H}" rx="4" fill="${cat.color}"/>`);
-    parts.push(`<text x="26" y="${CARD_TOP + 30}" font-family="${SANS}" font-size="20" font-weight="800" fill="#FFFFFF">${esc(l.name)}</text>`);
+    // ── zone 1: who they are ──
+    const nameSize = l.name.length > 22 ? 15 : 18;
+    parts.push(`<text x="26" y="${CARD_TOP + 24}" font-family="${SANS}" font-size="${nameSize}" font-weight="800" fill="#FFFFFF">${esc(l.name.slice(0, 30))}</text>`);
     const bits = [catText(l)];
-    if (l.stage) bits.push(`stage: ${stageLabel(l.stage)}`);
+    if (l.stage) bits.push(stageLabel(l.stage));
     if (l.temperature) bits.push(l.temperature);
-    parts.push(`<text x="26" y="${CARD_TOP + 52}" font-family="${SANS}" font-size="13" font-weight="600" fill="${cat.color}">${esc(bits.join('  ·  '))}</text>`);
+    parts.push(`<text x="26" y="${CARD_TOP + 44}" font-family="${SANS}" font-size="11.5" font-weight="600" fill="${cat.color}">${esc(bits.join(' · '))}</text>`);
     const phone = fmtPhone(l.phone);
-    const contact = [phone, l.email].filter(Boolean).join('   ·   ') || 'no contact info on file';
-    parts.push(`<text x="26" y="${CARD_TOP + 70}" font-family="${SANS}" font-size="13" fill="${C.cream}">${esc(contact)}</text>`);
-    parts.push(`<text x="${w - 16}" y="${CARD_TOP + 68}" text-anchor="end" font-family="${SANS}" font-size="10" fill="${C.muted}">tap: open on board · twist: next</text>`);
+    if (phone) parts.push(`<text x="26" y="${CARD_TOP + 61}" font-family="${SANS}" font-size="12.5" font-weight="600" fill="${C.cream}">${esc(phone)}</text>`);
+    const emailShort = l.email && l.email.length > 30 ? `${l.email.slice(0, 29)}…` : l.email;
+    parts.push(`<text x="26" y="${CARD_TOP + (phone ? 74 : 64)}" font-family="${SANS}" font-size="${phone ? 10.5 : 12.5}" fill="${l.email ? C.cream : C.muted}">${esc(emailShort || (phone ? '' : 'no contact info on file'))}</text>`);
+    // ── zone 2: the last note ──
+    const noteX = 296;
+    parts.push(`<rect x="${noteX - 14}" y="${CARD_TOP + 8}" width="1.5" height="${CARD_H - 16}" fill="#3B3554"/>`);
+    parts.push(`<text x="${noteX}" y="${CARD_TOP + 18}" font-family="${SANS}" font-size="9.5" font-weight="700" letter-spacing="1" fill="${C.muted}">LAST NOTE${l.note ? ` · ${leadAgo(l.noteAgeMs)} AGO` : ''}</text>`);
+    if (l.note) {
+      const noteLines = wrapTwo(l.note, 54); // breaks at words, ellipsis on overflow
+      parts.push(`<text x="${noteX}" y="${CARD_TOP + 38}" font-family="${SANS}" font-size="12" fill="${C.cream}">${esc(noteLines[0])}</text>`);
+      if (noteLines[1]) parts.push(`<text x="${noteX}" y="${CARD_TOP + 55}" font-family="${SANS}" font-size="12" fill="${C.cream}">${esc(noteLines[1])}</text>`);
+    } else {
+      parts.push(`<text x="${noteX}" y="${CARD_TOP + 40}" font-family="${SANS}" font-size="12" fill="${C.muted}">no notes yet</text>`);
+    }
+    const srcLine = [srcWord(l.src), l.website ? l.website.replace(/^https?:\/\/(www\.)?/, '') : null].filter(Boolean).join(' · ');
+    if (srcLine) parts.push(`<text x="${noteX}" y="${CARD_TOP + 72}" font-family="${SANS}" font-size="10.5" fill="${C.muted}">${esc(`from: ${srcLine}`.slice(0, 60))}</text>`);
+    // ── zone 3: business facts ──
+    const factX = 656;
+    parts.push(`<rect x="${factX - 14}" y="${CARD_TOP + 8}" width="1.5" height="${CARD_H - 16}" fill="#3B3554"/>`);
+    const facts = [];
+    if (l.industry) facts.push([String(l.industry).slice(0, 18), C.cream]);
+    if (l.monthlyRevenue) facts.push([`revenue: ${String(l.monthlyRevenue).slice(0, 12)}`, C.cream]);
+    if (l.dealValue) facts.push([`deal: $${l.dealValue}`, GREEN]);
+    if (!facts.length) facts.push(['no business info', C.muted]);
+    facts.slice(0, 3).forEach(([text, color], i) => {
+      parts.push(`<text x="${factX}" y="${CARD_TOP + 22 + i * 18}" font-family="${SANS}" font-size="11.5" font-weight="600" fill="${color}">${esc(text)}</text>`);
+    });
+    parts.push(`<text x="${factX}" y="${CARD_TOP + 72}" font-family="${SANS}" font-size="9.5" fill="${C.muted}">tap: open on board</text>`);
     return parts.join('');
   }
 
@@ -1883,6 +1936,9 @@ if (args.test !== undefined || process.argv.includes('--test') || process.argv.i
         createdMs: Date.now() - minsAgo * 60000, ageMs: minsAgo * 60000,
         followMs: 0, savedMs: 0, workedMs: 0, due: false,
         phone: '+13215557214', email: `${name.split(' ')[0].toLowerCase()}@gmail.com`, src: 'facebook_ads',
+        industry: 'Dental', monthlyRevenue: '$25k-50k', dealValue: 500, website: 'https://coastaldental.com',
+        note: 'Spoke with Maria, she wants the AI SEO package but needs to check with her partner first. Call back Thursday after 2pm.',
+        noteAgeMs: 26 * 3600_000,
         qname: name, ...extra,
       });
       crm.cats = {
