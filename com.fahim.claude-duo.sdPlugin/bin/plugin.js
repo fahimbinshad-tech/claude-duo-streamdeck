@@ -573,6 +573,9 @@ const ACT_QUIPS = {
   punt: ['bye, ChatGPT', 'get punted', 'not on my deck'],
 };
 function speech() {
+  // a brand-new lead beats everything Clawd has to say
+  const alert = leadAlertFresh();
+  if (alert) return `NEW LEAD: ${alert.name}!`;
   const bucket = Math.floor(mascotFrame / 18); // new line ~every 8s
   const working = sessions.list.filter((s) => s.state === 'working').length;
   const status = working > 0 ? [`${working} agent${working > 1 ? 's' : ''} cooking`, 'limits looking good'] : ['limits looking good', 'plenty of runway'];
@@ -825,8 +828,14 @@ function duoInner(w) {
       speechY = 82;
     }
     const waiting = waitingCount();
-    const showBadge = waiting && Math.floor(mascotFrame / 18) % 2 === 0; // alternate badge <-> speech
-    if (st === 'panic') {
+    const alert = leadAlertFresh();
+    const showBadge = !alert && waiting && Math.floor(mascotFrame / 18) % 2 === 0; // alternate badge <-> speech
+    if (alert) {
+      // a fresh lead outranks everything — green pulse + the lead's name
+      parts.push(`<circle cx="93" cy="${speechY - 4}" r="4" fill="${GREEN}"${mascotFrame % 2 ? ` opacity="0.35"` : ''}/>`);
+      const shortName = alert.name.length > 12 ? `${alert.name.slice(0, 11)}…` : alert.name;
+      parts.push(`<text x="101" y="${speechY}" font-family="${SANS}" font-size="11" font-weight="700" fill="${GREEN}">${esc(`NEW: ${shortName}`)}</text>`);
+    } else if (st === 'panic') {
       parts.push(`<text x="89" y="${speechY}" font-family="${SANS}" font-size="11" font-weight="700" fill="${C.red}">limit close!</text>`);
     } else if (showBadge) {
       parts.push(`<circle cx="93" cy="${speechY - 4}" r="4" fill="${C.amber}"/>`);
@@ -1105,6 +1114,258 @@ function sessionsKeySvg() {
   return parts.join('');
 }
 
+// ═══════════════════ CRM page (miassist.studio board) ═══════════════════
+// Live leads from the Supabase behind the daily CRM board. Credentials come
+// from the CRM repo's own .env.local at runtime — nothing lands in this repo.
+const CRM_ACTION = 'com.fahim.claude-duo.crm';
+const CRMLEAD_ACTION = 'com.fahim.claude-duo.crmlead';
+const CRM_POLL_MS = 60_000;
+
+function crmConfig() {
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'accounts.json'), 'utf8')).crm || {}; } catch {}
+  return {
+    envPath: cfg.envPath || path.join(os.homedir(), 'code', 'miassist-crmboard', '.env.local'),
+    baseUrl: (cfg.baseUrl || 'https://www.miassist.studio').replace(/\/$/, ''),
+    chromeProfile: cfg.chromeProfile || null,
+  };
+}
+
+let crmCredsCache = null;
+function crmCreds() {
+  if (crmCredsCache) return crmCredsCache;
+  try {
+    const text = fs.readFileSync(crmConfig().envPath, 'utf8');
+    const env = {};
+    for (const line of text.split('\n')) {
+      const m = line.match(/^([A-Z0-9_]+)="?([^"\n]*?)"?\s*$/);
+      if (m) env[m[1]] = m[2];
+    }
+    const url = env.SUPABASE_URL || env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = env.SUPABASE_SECRET_KEY || env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (url && key) crmCredsCache = { url: url.replace(/\/$/, ''), key };
+  } catch (e) { log('crm creds unavailable:', e.message); }
+  return crmCredsCache;
+}
+
+const STAGE_COLORS = {
+  new: '#4ADE80', to_contact: '#A8A29E', tried: '#FBBF24', talked: '#60A5FA', follow_up: '#FB923C',
+  booked: '#A78BFA', proposal: '#F472B6', won: '#4ADE80', lost: '#6B6580',
+};
+const STAGE_LABELS = {
+  new: 'new', to_contact: 'to contact', tried: 'tried', talked: 'talked', follow_up: 'follow-up',
+  booked: 'booked', proposal: 'proposal', won: 'won', lost: 'lost',
+};
+const TEMP_COLORS = { hot: '#F87171', warm: '#FBBF24', cold: '#60A5FA' };
+const GREEN = '#4ADE80';
+
+const crm = { leads: [], newToday: 0, needsAction: 0, error: null, fetchedAt: 0 };
+let crmSel = 0;
+let leadAlert = null; // { name, at } — a brand-new lead just landed
+
+// remember the newest lead we've seen so a restart never re-announces old leads
+const CRM_STATE_FILE = path.join(__dirname, '..', 'logs', 'crm-state.json');
+let crmLastSeen = 0;
+try { crmLastSeen = JSON.parse(fs.readFileSync(CRM_STATE_FILE, 'utf8')).lastSeen || 0; } catch {}
+
+function leadName(l) {
+  const person = [l.first_name, l.last_name].filter(Boolean).join(' ').trim();
+  return l.business_name || person || (l.email || '').split('@')[0] || l.phone || 'quiz lead';
+}
+
+function leadAgo(ms) {
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return `${Math.max(1, mins)}m`;
+  if (mins < 1440) return `${Math.floor(mins / 60)}h`;
+  return `${Math.floor(mins / 1440)}d`;
+}
+
+async function fetchLeads() {
+  const creds = crmCreds();
+  if (!creds) { crm.error = 'no CRM creds'; return; }
+  const qs = 'select=id,first_name,last_name,business_name,email,phone,stage,temperature,created_at,follow_up_at,utm_source'
+    + '&disqualified=not.is.true&stage=not.in.(won,lost)&order=created_at.desc&limit=24';
+  try {
+    const res = await fetch(`${creds.url}/rest/v1/leads?${qs}`, {
+      headers: { apikey: creds.key, Authorization: `Bearer ${creds.key}` },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const rows = await res.json();
+    const now = Date.now();
+    const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+    const list = rows.map((l) => {
+      const createdMs = Date.parse(l.created_at) || 0;
+      const due = l.follow_up_at && Date.parse(l.follow_up_at) <= now;
+      return {
+        id: l.id, name: leadName(l), stage: l.stage, temperature: l.temperature,
+        createdMs, ageMs: now - createdMs, due,
+        // "needs you" = overdue follow-up, or an untouched lead still fresh
+        // enough to save (48h) — NOT every stale quiz lead ever
+        needs: due || ((l.stage === 'new' || l.stage === 'to_contact') && now - createdMs < 48 * 3600_000),
+      };
+    });
+    list.sort((a, b) => (b.due - a.due) || (b.createdMs - a.createdMs)); // overdue first, then freshest
+    crm.leads = list;
+    crm.newToday = list.filter((l) => l.createdMs >= midnight.getTime()).length;
+    crm.needsAction = list.filter((l) => l.needs).length;
+    crm.error = null;
+    crm.fetchedAt = now;
+    const newest = Math.max(0, ...list.map((l) => l.createdMs));
+    if (crmLastSeen && newest > crmLastSeen) {
+      const fresh = list.find((l) => l.createdMs === newest);
+      leadAlert = { name: fresh ? fresh.name : 'new lead', at: now };
+      log('NEW LEAD:', leadAlert.name);
+    }
+    if (newest > crmLastSeen) {
+      crmLastSeen = newest;
+      try { fs.writeFileSync(CRM_STATE_FILE, JSON.stringify({ lastSeen: crmLastSeen })); } catch {}
+    }
+  } catch (e) {
+    crm.error = e.message;
+    log('fetchLeads failed:', e.message);
+  }
+}
+
+function leadAlertFresh() {
+  return leadAlert && Date.now() - leadAlert.at < 120_000 ? leadAlert : null;
+}
+
+function leadStripe(l) {
+  return TEMP_COLORS[l.temperature] || STAGE_COLORS[l.stage] || C.muted;
+}
+
+const CRM_OVERVIEW_W = 190;
+function crmInner(w) {
+  const parts = [];
+  parts.push(`<rect width="${w}" height="100" fill="${C.bg}"/>`);
+  parts.push(invader(8, 2, 1.3, C.coral));
+  parts.push(`<text x="28" y="15" font-family="${SERIF}" font-size="14" font-weight="700" fill="${C.cream}">CRM · Leads</text>`);
+  const alert = leadAlertFresh();
+  const summary = crm.error ? 'CRM offline'
+    : alert ? `NEW: ${alert.name}`
+    : crm.needsAction ? `${crm.needsAction} need you · ${crm.leads.length} in play`
+    : `${crm.leads.length} in play`;
+  const sumColor = crm.error ? C.red : alert ? GREEN : crm.needsAction ? C.amber : C.muted;
+  parts.push(`<text x="${w - 10}" y="14" text-anchor="end" font-family="${SANS}" font-size="11" font-weight="600" fill="${sumColor}">${esc(summary)}</text>`);
+
+  const wide = w >= 760;
+  const listX = wide ? CRM_OVERVIEW_W : 0;
+
+  if (wide) {
+    // overview panel — tap it to open the board, hold anywhere for a briefing
+    const pulse = alert && mascotFrame % 2 === 0;
+    parts.push(`<rect x="${CARD_MARGIN}" y="${CARD_TOP}" width="${CRM_OVERVIEW_W - CARD_MARGIN * 2}" height="${CARD_H}" rx="10" fill="${C.card}"${alert ? ` stroke="${pulse ? GREEN : '#166534'}" stroke-width="2.5"` : ''}/>`);
+    parts.push(`<text x="22" y="${CARD_TOP + 40}" font-family="${SANS}" font-size="34" font-weight="800" fill="${alert ? GREEN : C.cream}">${crm.newToday}</text>`);
+    parts.push(`<text x="${22 + String(crm.newToday).length * 21 + 8}" y="${CARD_TOP + 39}" font-family="${SANS}" font-size="12" fill="${C.muted}">today</text>`);
+    const line2 = crm.needsAction ? `${crm.needsAction} need follow-up` : 'nobody waiting';
+    parts.push(`<text x="22" y="${CARD_TOP + 60}" font-family="${SANS}" font-size="11.5" font-weight="600" fill="${crm.needsAction ? C.amber : GREEN}">${esc(line2)}</text>`);
+    parts.push(`<text x="22" y="${CARD_TOP + 72}" font-family="${SANS}" font-size="10" fill="${C.muted}">tap: board · hold: brief me</text>`);
+  }
+
+  if (!crm.leads.length) {
+    const msg = crm.error ? `board unreachable — ${crm.error}` : 'no open leads — pipeline clear';
+    parts.push(`<text x="${listX + (w - listX) / 2}" y="62" text-anchor="middle" font-family="${SANS}" font-size="13" fill="${C.muted}">${esc(msg)}</text>`);
+    return parts.join('');
+  }
+
+  const listW = w - listX;
+  const { n, cardW } = cardGeometry(listW);
+  const pageStart = Math.floor(crmSel / n) * n;
+  const visible = crm.leads.slice(pageStart, pageStart + n);
+  const perLine = Math.max(8, Math.floor((cardW - 22) / 7.4));
+
+  visible.forEach((l, i) => {
+    const x = listX + CARD_MARGIN + i * (cardW + CARD_MARGIN);
+    const stripe = leadStripe(l);
+    const selected = pageStart + i === crmSel;
+    parts.push(`<rect x="${x}" y="${CARD_TOP}" width="${cardW}" height="${CARD_H}" rx="10" fill="${selected ? '#343048' : C.card}"${selected ? ` stroke="${stripe}" stroke-width="2.5"` : ''}/>`);
+    parts.push(`<rect x="${x}" y="${CARD_TOP}" width="6" height="${CARD_H}" rx="3" fill="${stripe}"/>`);
+    const lines = wrapTwo(l.name, perLine);
+    parts.push(`<text x="${x + 15}" y="${CARD_TOP + 24}" font-family="${SANS}" font-size="14" font-weight="700" fill="${selected ? '#FFFFFF' : C.cream}">${esc(lines[0])}</text>`);
+    if (lines[1]) parts.push(`<text x="${x + 15}" y="${CARD_TOP + 41}" font-family="${SANS}" font-size="14" font-weight="700" fill="${selected ? '#FFFFFF' : C.cream}">${esc(lines[1])}</text>`);
+    const foot = l.due ? `follow-up due · ${leadAgo(l.ageMs)}` : `${STAGE_LABELS[l.stage] || l.stage} · ${leadAgo(l.ageMs)}`;
+    const footColor = l.due ? C.amber : stripe;
+    parts.push(`<circle cx="${x + 20}" cy="${CARD_TOP + 61}" r="5" fill="${footColor}"/>`);
+    parts.push(`<text x="${x + 30}" y="${CARD_TOP + 65}" font-family="${SANS}" font-size="11.5" font-weight="600" fill="${footColor}">${esc(foot)}</text>`);
+  });
+
+  if (crm.leads.length > n) {
+    const pages = Math.ceil(crm.leads.length / n);
+    parts.push(`<text x="${listX + listW / 2}" y="15" text-anchor="middle" font-family="${SANS}" font-size="10" fill="${C.muted}">page ${Math.floor(pageStart / n) + 1}/${pages} · twist to scroll</text>`);
+  }
+  return parts.join('');
+}
+
+function crmSlice(sliceIndex, totalSlices) {
+  const inner = crmInner(200 * totalSlices);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="${200 * sliceIndex} 0 200 100">${inner}</svg>`;
+}
+
+function crmKeySvg() {
+  const alert = leadAlertFresh();
+  const parts = [];
+  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">`);
+  parts.push(`<rect width="144" height="144" rx="14" fill="${C.bg}"/>`);
+  parts.push(invader(8, 6, 1.6, C.coral));
+  parts.push(`<text x="78" y="19" text-anchor="middle" font-family="${SERIF}" font-size="16" font-weight="700" fill="${C.cream}">CRM</text>`);
+  const big = alert ? crm.newToday : (crm.needsAction || crm.newToday);
+  parts.push(`<text x="72" y="78" text-anchor="middle" font-family="${SANS}" font-size="40" font-weight="800" fill="${alert ? GREEN : crm.needsAction ? C.amber : C.cream}">${big}</text>`);
+  parts.push(`<text x="72" y="102" text-anchor="middle" font-family="${SANS}" font-size="11" fill="${C.muted}">${alert ? 'new lead!' : crm.needsAction ? 'need you' : 'today'}</text>`);
+  parts.push(`</svg>`);
+  return parts.join('');
+}
+
+function crmLeadKeySvg(idx) {
+  const l = crm.leads[idx];
+  const parts = [];
+  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">`);
+  parts.push(`<rect width="144" height="144" rx="14" fill="${C.bg}"/>`);
+  if (!l) {
+    parts.push(`<text x="72" y="82" text-anchor="middle" font-family="${SANS}" font-size="22" fill="#2A2638">·</text>`);
+    parts.push('</svg>');
+    return parts.join('');
+  }
+  const stripe = leadStripe(l);
+  parts.push(`<rect x="0" y="0" width="8" height="144" fill="${stripe}"/>`);
+  const lines = wrapTwo(l.name, 11);
+  parts.push(`<text x="20" y="${lines[1] ? 46 : 58}" font-family="${SANS}" font-size="17" font-weight="700" fill="${C.cream}">${esc(lines[0])}</text>`);
+  if (lines[1]) parts.push(`<text x="20" y="68" font-family="${SANS}" font-size="17" font-weight="700" fill="${C.cream}">${esc(lines[1])}</text>`);
+  const foot = l.due ? 'follow-up due' : (STAGE_LABELS[l.stage] || l.stage);
+  parts.push(`<circle cx="25" cy="106" r="5" fill="${l.due ? C.amber : stripe}"/>`);
+  parts.push(`<text x="35" y="110" font-family="${SANS}" font-size="12" font-weight="600" fill="${l.due ? C.amber : stripe}">${esc(foot)}</text>`);
+  parts.push(`<text x="20" y="130" font-family="${SANS}" font-size="11" fill="${C.muted}">${esc(leadAgo(l.ageMs))} ago</text>`);
+  parts.push('</svg>');
+  return parts.join('');
+}
+
+function openCrm(pathname) {
+  const { baseUrl, chromeProfile } = crmConfig();
+  const url = `${baseUrl}${pathname}`;
+  log(`open crm: ${url} chromeProfile=${chromeProfile || 'default browser'}`);
+  if (chromeProfile) {
+    execFile('/usr/bin/open', ['-na', 'Google Chrome', '--args', `--profile-directory=${chromeProfile}`, url], (e) => { if (e) log('chrome open failed:', e.message); });
+  } else {
+    execFile('/usr/bin/open', [url], (e) => { if (e) log('open url failed:', e.message); });
+  }
+}
+
+function openLead(l) {
+  if (!l) return openCrm('/admin/analytics/leads');
+  openCrm(`/admin/analytics/contacts?q=${encodeURIComponent(l.name)}`);
+}
+
+function launchCrmBrief() {
+  const dir = path.join(os.homedir(), '.warp', 'launch_configurations');
+  const prompt = 'Brief me on my CRM: new leads today, who needs follow-up, and recommended next moves. Use the crm skill.';
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const yaml = `---\nname: claude-crm\nwindows:\n  - tabs:\n      - title: claude · crm brief\n        layout:\n          cwd: ${os.homedir()}\n          commands:\n            - exec: claude "${prompt}"\n`;
+    fs.writeFileSync(path.join(dir, 'claude-crm.yaml'), yaml);
+    log('launch crm brief');
+    execFile('/usr/bin/open', ['warp://launch/claude-crm.yaml'], (e) => { if (e) log('warp launch failed:', e.message); });
+  } catch (e) { log('launchCrmBrief error:', e.message); }
+}
+
 // ---- session -> hosting app wiring ----
 // Match each session to its live `claude` process (by launch cwd), walk the
 // parent chain to the GUI app hosting it (Warp/Claude app/iTerm/...), so a
@@ -1253,6 +1514,39 @@ if (args.test !== undefined || process.argv.includes('--test') || process.argv.i
     fs.writeFileSync(path.join(dir, 'test-duo-800.png'), Buffer.from(svgToPngDataUri(duoSvg).split(',')[1], 'base64'));
     const sesSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="100">${sessionsInner(800)}</svg>`;
     fs.writeFileSync(path.join(dir, 'test-sessions-800.png'), Buffer.from(svgToPngDataUri(sesSvg).split(',')[1], 'base64'));
+    if (mock) {
+      const mkLead = (name, stage, temperature, minsAgo, due) => ({
+        id: name, name, stage, temperature,
+        createdMs: Date.now() - minsAgo * 60000, ageMs: minsAgo * 60000,
+        due: !!due, needs: !!due || stage === 'to_contact' || stage === 'follow_up',
+      });
+      crm.leads = [
+        mkLead('Coastal Dental', 'follow_up', 'hot', 3 * 1440, true),
+        mkLead('Maria Gonzalez', 'to_contact', 'warm', 2, false),
+        mkLead('On The Level Cleaning', 'talked', null, 95, false),
+        mkLead('J&R HVAC', 'booked', 'hot', 26 * 60, false),
+        mkLead('Palm Bay Nails', 'tried', 'cold', 2 * 1440, false),
+      ];
+      crm.newToday = 2;
+      crm.needsAction = 2;
+    } else {
+      await fetchLeads();
+      console.log('crm', JSON.stringify({ leads: crm.leads.length, newToday: crm.newToday, needsAction: crm.needsAction, error: crm.error }));
+    }
+    const crmSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="100">${crmInner(800)}</svg>`;
+    fs.writeFileSync(path.join(dir, 'test-crm-800.png'), Buffer.from(svgToPngDataUri(crmSvg).split(',')[1], 'base64'));
+    if (mock) {
+      leadAlert = { name: 'Maria Gonzalez', at: Date.now() };
+      const alertSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="100">${crmInner(800)}</svg>`;
+      fs.writeFileSync(path.join(dir, 'test-crm-alert-800.png'), Buffer.from(svgToPngDataUri(alertSvg).split(',')[1], 'base64'));
+      const duoAlertSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="100">${duoInner(800)}</svg>`;
+      fs.writeFileSync(path.join(dir, 'test-duo-newlead-800.png'), Buffer.from(svgToPngDataUri(duoAlertSvg).split(',')[1], 'base64'));
+      leadAlert = null;
+    }
+    fs.writeFileSync(path.join(dir, 'test-key-crm.png'), Buffer.from(svgToPngDataUri(crmKeySvg()).split(',')[1], 'base64'));
+    for (const i of [0, 1]) {
+      fs.writeFileSync(path.join(dir, `test-key-crmlead-${i}.png`), Buffer.from(svgToPngDataUri(crmLeadKeySvg(i)).split(',')[1], 'base64'));
+    }
     console.log('pngs -> logs/ (exact device output)');
     process.exit(0);
   })();
@@ -1304,8 +1598,23 @@ function renderContext(context) {
     }
     return;
   }
+  if (info.action === CRM_ACTION) {
+    if (info.controller === 'Encoder') {
+      const group = allEncoders().filter(([, i]) => i.action === CRM_ACTION);
+      const idx = Math.max(0, group.findIndex(([ctx]) => ctx === context));
+      send({ event: 'setFeedback', context, payload: { canvas: svgToPngDataUri(crmSlice(idx, Math.max(1, group.length))) } });
+    } else {
+      send({ event: 'setImage', context, payload: { image: svgToPngDataUri(crmKeySvg()), target: 0 } });
+    }
+    return;
+  }
+  if (info.action === CRMLEAD_ACTION) {
+    const idx = (info.row ?? 0) * 4 + (info.column ?? 0);
+    send({ event: 'setImage', context, payload: { image: svgToPngDataUri(crmLeadKeySvg(idx)), target: 0 } });
+    return;
+  }
   if (info.controller === 'Encoder') {
-    const everyone = allEncoders().filter(([, i]) => i.action !== SESSIONS_ACTION);
+    const everyone = allEncoders().filter(([, i]) => i.action !== SESSIONS_ACTION && i.action !== CRM_ACTION && i.action !== CRMLEAD_ACTION);
     const distinct = new Set(everyone.map(([, i]) => i.action));
     const isAdjacent = (list) => list.every(([, i], idx) => idx === 0 || (i.column ?? 0) === (list[idx - 1][1].column ?? 0) + 1);
     let svg;
@@ -1361,6 +1670,8 @@ ws.on('open', () => {
   enrichSessionApps(renderAll);
   pollBadges();
   setInterval(pollBadges, 10_000);
+  fetchLeads().then(renderAll);
+  setInterval(() => fetchLeads().then(renderAll), CRM_POLL_MS);
   setInterval(() => {
     scanSessions();
     enrichSessionApps(renderAll);
@@ -1383,6 +1694,7 @@ ws.on('message', (buf) => {
         action: ev.action,
         controller: ev.payload?.controller || 'Keypad',
         column: ev.payload?.coordinates?.column ?? 0,
+        row: ev.payload?.coordinates?.row ?? 0,
       });
       renderAll(); // re-render the whole group so wide panels re-stitch
       break;
@@ -1399,6 +1711,38 @@ ws.on('message', (buf) => {
       }
       if (ev.action === SKILLS_ACTION) {
         launchSkill(SKILLS[skillSel]);
+        break;
+      }
+      if (ev.action === CRMLEAD_ACTION) {
+        const info = contexts.get(ev.context) || {};
+        const idx = (info.row ?? ev.payload?.coordinates?.row ?? 0) * 4 + (info.column ?? ev.payload?.coordinates?.column ?? 0);
+        openLead(crm.leads[idx]);
+        break;
+      }
+      if (ev.action === CRM_ACTION) {
+        if (ev.event === 'dialDown') {
+          // press the knob -> open the highlighted lead on the board
+          openLead(crm.leads[crmSel]);
+          break;
+        }
+        if (ev.event === 'touchTap' && Array.isArray(ev.payload?.tapPos)) {
+          if (ev.payload.hold) { launchCrmBrief(); break; }
+          const group = allEncoders().filter(([, i]) => i.action === CRM_ACTION);
+          const sliceIdx = Math.max(0, group.findIndex(([ctx]) => ctx === ev.context));
+          const w = 200 * Math.max(1, group.length);
+          const absX = ev.payload.tapPos[0] + sliceIdx * 200;
+          const wide = w >= 760;
+          if (wide && absX < CRM_OVERVIEW_W) { openCrm('/admin/analytics/leads'); break; }
+          const listX = wide ? CRM_OVERVIEW_W : 0;
+          const { n, cardW } = cardGeometry(w - listX);
+          const cardIdx = Math.max(0, Math.min(n - 1, Math.floor((absX - listX - CARD_MARGIN) / (cardW + CARD_MARGIN))));
+          const pageStart = Math.floor(crmSel / n) * n;
+          const target = crm.leads[pageStart + cardIdx];
+          if (target) { crmSel = pageStart + cardIdx; openLead(target); renderAll(); }
+          else openCrm('/admin/analytics/leads');
+          break;
+        }
+        openCrm('/admin/analytics/leads'); // keypad press -> the board
         break;
       }
       if (ev.action === SESSIONS_ACTION) {
@@ -1451,6 +1795,12 @@ ws.on('message', (buf) => {
     case 'dialRotate':
       if (ev.action === SKILLS_ACTION) {
         skillSel = (skillSel + (ev.payload?.ticks > 0 ? 1 : -1) + SKILLS.length) % SKILLS.length;
+        renderAll();
+        break;
+      }
+      if (ev.action === CRM_ACTION) {
+        const maxLead = Math.max(0, crm.leads.length - 1);
+        crmSel = Math.max(0, Math.min(maxLead, crmSel + (ev.payload?.ticks > 0 ? 1 : -1)));
         renderAll();
         break;
       }

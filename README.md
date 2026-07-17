@@ -1,10 +1,10 @@
 # Claude Duo — Stream Deck Command Center
 
-Your Claude life on a Stream Deck + touch bar: **both accounts' usage**, **live sessions with one-press jump to the exact chat**, Slack/WhatsApp unread badges, a skills launcher — and **Clawd**, the pixel mascot who juggles a soccer ball, morphs into the Claude spark, greets you by name, and punts the ChatGPT logo off your screen.
+Your Claude life on a Stream Deck + touch bar: **both accounts' usage**, **live sessions with one-press jump to the exact chat**, **a live CRM leads board that flashes when a new lead lands**, Slack/WhatsApp unread badges, a skills launcher — and **Clawd**, the pixel mascot who juggles a soccer ball, morphs into the Claude spark, greets you by name, announces new leads, and punts the ChatGPT logo off your screen.
 
 ![Full-bar dashboard](docs/full-bar-dashboard.png)
 
-## The three touch-bar pages (swipe to switch)
+## The four touch-bar pages (swipe to switch)
 
 ### Page 1 — Usage dashboard
 - Both Claude accounts side by side: Current (5h) % and Weekly % with bars and "Resets in…" timers. Amber at 70%, red at 90%
@@ -20,6 +20,12 @@ Your Claude life on a Stream Deck + touch bar: **both accounts' usage**, **live 
 ### Page 3 — Comms + Skills
 - **Slack / WhatsApp** cards showing the dock-badge unread count (read via `lsappinfo`, no APIs or tokens). Tap opens the app
 - **Skills dial**: twist through your most-used slash commands, press to run it in a fresh Warp tab
+
+### Page 4 — CRM leads (speed-to-lead on hardware)
+- Live leads from your own CRM (Supabase): overview panel (new today, who needs follow-up) + lead cards colored by temperature/stage, overdue follow-ups first
+- **Twist** = scroll · **tap a lead / press the knob** = that lead opens on the board · **tap the overview** = the board · **hold** = a fresh Claude terminal briefs you on the whole pipeline
+- The **8 physical keys** each hold a lead — press one, you're looking at them
+- **New-lead alert**: the moment a lead lands, the panel pulses green, the CRM key flips to "new lead!", and Clawd announces the name on page 1. Lead in, tap, call — nobody has this
 
 ## Install
 
@@ -45,7 +51,8 @@ cp accounts.example.json accounts.json
 {
   "personal": { "label": "Personal", "service": "Claude Code-credentials", "chromeProfile": "Profile 22" },
   "business": { "label": "Work", "service": "Claude Code-credentials-xxxxxxxx", "chromeProfile": "Profile 5" },
-  "skills": ["/morning-briefing", "/summarize"]
+  "skills": ["/morning-briefing", "/summarize"],
+  "crm": { "envPath": "/path/to/your-crm/.env.local", "baseUrl": "https://your-crm.example.com" }
 }
 ```
 
@@ -55,6 +62,7 @@ cp accounts.example.json accounts.json
   ```
 - **`chromeProfile`** — which Chrome profile holds that Claude account's login (`Profile N` from `~/Library/Application Support/Google/Chrome/Local State`). Deep links open there
 - **`skills`** — optional; overrides the skills dial list
+- **`crm`** — optional; powers page 4. `envPath` points at a `.env.local` containing `SUPABASE_URL` + `SUPABASE_SECRET_KEY` (read at runtime, never copied), `baseUrl` is your CRM's web UI, `chromeProfile` optionally pins which Chrome profile opens it. Expects a `leads` table with name/stage/temperature/created_at/follow_up_at columns
 
 ## How it works
 
@@ -63,8 +71,9 @@ Dependency-light Node (no SDK framework): speaks the Stream Deck WebSocket proto
 Data sources — all local, nothing leaves your machine:
 - **Usage**: Anthropic's OAuth usage endpoint, using the tokens Claude Code already keeps in the Keychain (read-only; tokens are never refreshed or stored — an expired token just shows "open claude to fix")
 - **Sessions**: `~/.claude/sessions/<pid>.json` — Claude Code's live registry (name, status, cwd, pid, claude.ai bridge id) — joined to transcripts for conversation topics
+- **Leads**: your CRM's Supabase REST API, polled every 60s with credentials read at runtime from the CRM project's own `.env.local` (the newest-lead marker in `logs/crm-state.json` keeps restarts from re-announcing old leads)
 - **Unread badges**: `lsappinfo` dock badge labels
-- **Launching**: Warp launch configurations (`warp://launch/…`) for new sessions and skills
+- **Launching**: Warp launch configurations (`warp://launch/…`) for new sessions, skills, and CRM briefings
 
 ## Hacking on it
 

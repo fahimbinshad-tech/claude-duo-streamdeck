@@ -10,93 +10,203 @@
   "Icon": "imgs/plugin",
   "CodePath": "bin/plugin.js",
   "SDKVersion": 2,
-  "Software": { "MinimumVersion": "6.5" },
-  "OS": [{ "Platform": "mac", "MinimumVersion": "12" }],
-  "Nodejs": { "Version": "20" },
+  "Software": {
+    "MinimumVersion": "6.5"
+  },
+  "OS": [
+    {
+      "Platform": "mac",
+      "MinimumVersion": "12"
+    }
+  ],
+  "Nodejs": {
+    "Version": "20"
+  },
   "Actions": [
     {
       "UUID": "com.fahim.claude-duo.personal",
       "Name": "Personal (gmail)",
       "Tooltip": "Claude usage for fahimbinshad@gmail.com",
       "Icon": "imgs/personal",
-      "Controllers": ["Keypad", "Encoder"],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
       "Encoder": {
         "layout": "layouts/usage-strip.json",
         "StackColor": "#60a5fa",
         "Icon": "imgs/personal",
-        "TriggerDescription": { "Touch": "Open claude.ai usage", "Push": "Open claude.ai usage" }
+        "TriggerDescription": {
+          "Touch": "Open claude.ai usage",
+          "Push": "Open claude.ai usage"
+        }
       },
-      "States": [{ "Image": "imgs/key-personal" }]
+      "States": [
+        {
+          "Image": "imgs/key-personal"
+        }
+      ]
     },
     {
       "UUID": "com.fahim.claude-duo.business",
       "Name": "Mi Assist (claude2)",
       "Tooltip": "Claude usage for fahim@miassist.ai",
       "Icon": "imgs/business",
-      "Controllers": ["Keypad", "Encoder"],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
       "Encoder": {
         "layout": "layouts/usage-strip.json",
         "StackColor": "#c084fc",
         "Icon": "imgs/business",
-        "TriggerDescription": { "Touch": "Open claude.ai usage", "Push": "Open claude.ai usage" }
+        "TriggerDescription": {
+          "Touch": "Open claude.ai usage",
+          "Push": "Open claude.ai usage"
+        }
       },
-      "States": [{ "Image": "imgs/key-business" }]
+      "States": [
+        {
+          "Image": "imgs/key-business"
+        }
+      ]
     },
     {
       "UUID": "com.fahim.claude-duo.sessions",
       "Name": "Claude Sessions",
-      "Tooltip": "Live Claude Code sessions — tap to focus, twist to scroll",
+      "Tooltip": "Live Claude Code sessions \u2014 tap to focus, twist to scroll",
       "Icon": "imgs/sessions",
-      "Controllers": ["Keypad", "Encoder"],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
       "Encoder": {
         "layout": "layouts/usage-strip.json",
         "StackColor": "#E07B54",
         "Icon": "imgs/sessions",
-        "TriggerDescription": { "Touch": "Focus that session's window", "Rotate": "Scroll sessions", "Push": "Refresh" }
+        "TriggerDescription": {
+          "Touch": "Focus that session's window",
+          "Rotate": "Scroll sessions",
+          "Push": "Refresh"
+        }
       },
-      "States": [{ "Image": "imgs/key-personal" }]
+      "States": [
+        {
+          "Image": "imgs/key-personal"
+        }
+      ]
     },
     {
       "UUID": "com.fahim.claude-duo.skills",
       "Name": "Skills Dial",
       "Tooltip": "Twist through your top Claude skills, press to run in Warp",
       "Icon": "imgs/skills",
-      "Controllers": ["Keypad", "Encoder"],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
       "Encoder": {
         "layout": "layouts/usage-strip.json",
         "StackColor": "#E07B54",
         "Icon": "imgs/skills",
-        "TriggerDescription": { "Touch": "Run selected skill", "Rotate": "Pick skill", "Push": "Run selected skill" }
+        "TriggerDescription": {
+          "Touch": "Run selected skill",
+          "Rotate": "Pick skill",
+          "Push": "Run selected skill"
+        }
       },
-      "States": [{ "Image": "imgs/key-personal" }]
+      "States": [
+        {
+          "Image": "imgs/key-personal"
+        }
+      ]
     },
     {
       "UUID": "com.fahim.claude-duo.slack",
       "Name": "Slack Unread",
-      "Tooltip": "Slack dock badge — tap to open Slack",
+      "Tooltip": "Slack dock badge \u2014 tap to open Slack",
       "Icon": "imgs/slack",
-      "Controllers": ["Keypad", "Encoder"],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
       "Encoder": {
         "layout": "layouts/usage-strip.json",
         "StackColor": "#36C5F0",
         "Icon": "imgs/slack",
-        "TriggerDescription": { "Touch": "Open Slack", "Push": "Open Slack" }
+        "TriggerDescription": {
+          "Touch": "Open Slack",
+          "Push": "Open Slack"
+        }
       },
-      "States": [{ "Image": "imgs/key-personal" }]
+      "States": [
+        {
+          "Image": "imgs/key-personal"
+        }
+      ]
     },
     {
       "UUID": "com.fahim.claude-duo.whatsapp",
       "Name": "WhatsApp Unread",
-      "Tooltip": "WhatsApp dock badge — tap to open WhatsApp",
+      "Tooltip": "WhatsApp dock badge \u2014 tap to open WhatsApp",
       "Icon": "imgs/whatsapp",
-      "Controllers": ["Keypad", "Encoder"],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
       "Encoder": {
         "layout": "layouts/usage-strip.json",
         "StackColor": "#25D366",
         "Icon": "imgs/whatsapp",
-        "TriggerDescription": { "Touch": "Open WhatsApp", "Push": "Open WhatsApp" }
+        "TriggerDescription": {
+          "Touch": "Open WhatsApp",
+          "Push": "Open WhatsApp"
+        }
       },
-      "States": [{ "Image": "imgs/key-personal" }]
+      "States": [
+        {
+          "Image": "imgs/key-personal"
+        }
+      ]
+    },
+    {
+      "UUID": "com.fahim.claude-duo.crm",
+      "Name": "CRM Leads",
+      "Tooltip": "Live leads from the miassist CRM board \u2014 tap opens the board or a lead, hold runs a Claude briefing",
+      "Icon": "imgs/crm",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "layouts/usage-strip.json",
+        "StackColor": "#4ADE80",
+        "Icon": "imgs/crm",
+        "TriggerDescription": {
+          "Touch": "Open board / lead (hold = Claude briefing)",
+          "Push": "Open highlighted lead",
+          "Rotate": "Scroll leads"
+        }
+      },
+      "States": [
+        {
+          "Image": "imgs/crm"
+        }
+      ]
+    },
+    {
+      "UUID": "com.fahim.claude-duo.crmlead",
+      "Name": "CRM Lead Key",
+      "Tooltip": "One key per lead (newest first, by key position) \u2014 press opens that lead on the board",
+      "Icon": "imgs/crm-lead",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/crm-lead"
+        }
+      ]
     }
   ]
 }
