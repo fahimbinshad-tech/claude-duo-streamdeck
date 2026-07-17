@@ -1541,10 +1541,11 @@ async function fetchAds() {
   const { accounts } = adsConfig();
   const token = adsToken();
   if (!accounts.length || !token) { ads.error = accounts.length ? 'no ads token' : 'no ads accounts set up'; return; }
-  const rows = [];
   try {
     const preset = adsPreset;
-    for (const a of accounts) {
+    // staggered-parallel: quick enough to feel instant, gentle enough for Meta
+    const rows = await Promise.all(accounts.map((a, i) => (async () => {
+      await new Promise((r) => setTimeout(r, i * 250));
       const res = await fetch(`https://graph.facebook.com/v21.0/act_${a.act}/insights?date_preset=${preset}&fields=spend,actions&access_token=${token}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
@@ -1555,9 +1556,9 @@ async function fetchAds() {
         if (act.action_type === 'lead') { leads = parseInt(act.value, 10) || 0; break; }
         if (act.action_type === 'offsite_conversion.fb_pixel_lead') leads = parseInt(act.value, 10) || leads;
       }
-      rows.push({ label: a.label || `act ${a.act}`, act: a.act, spend, leads, cpl: leads ? spend / leads : null });
-      await new Promise((r) => setTimeout(r, 600)); // no bursts, ever
-    }
+      return { label: a.label || `act ${a.act}`, act: a.act, spend, leads, cpl: leads ? spend / leads : null };
+    })()));
+    if (preset !== adsPreset) return; // user already switched again — discard
     const firstAdsFetch = !ads.fetchedAt;
     ads.rows = rows;
     ads.preset = preset;
@@ -1618,18 +1619,21 @@ function adsInner(w) {
   const parts = [];
   parts.push(`<rect width="${w}" height="100" fill="${C.bg}"/>`);
   parts.push(invader(8, 2, 1.3, C.coral));
-  parts.push(`<text x="28" y="15" font-family="${SERIF}" font-size="14" font-weight="700" fill="${C.cream}">Ads · ${esc(ADS_PRESETS[ads.preset] || 'Today')}</text>`);
+  // the title tracks what you ASKED for the moment you press; numbers dim until they land
+  const stale = adsPreset !== ads.preset;
+  parts.push(`<text x="28" y="15" font-family="${SERIF}" font-size="14" font-weight="700" fill="${stale ? C.amber : C.cream}">Ads · ${esc(ADS_PRESETS[adsPreset] || 'Today')}</text>`);
   const total = ads.rows.reduce((a, r) => a + r.spend, 0);
-  const stale = adsPreset !== ads.preset ? 'loading…' : null;
   const headRight = ads.error ? `ads offline — ${ads.error}`
-    : stale || (ads.rows.length ? `${money(total)} total · tap: open account · hold: brief`
-    : 'add accounts in accounts.json');
+    : stale ? 'updating…'
+    : ads.rows.length ? `${money(total)} total · tap: open account · hold: brief`
+    : 'add accounts in accounts.json';
   parts.push(`<text x="${w - 10}" y="14" text-anchor="end" font-family="${SANS}" font-size="11" font-weight="600" fill="${ads.error ? C.red : C.muted}">${esc(headRight)}</text>`);
   if (!ads.rows.length) {
     parts.push(`<text x="${w / 2}" y="62" text-anchor="middle" font-family="${SANS}" font-size="13" fill="${C.muted}">no ad accounts configured</text>`);
     return parts.join('');
   }
   const { n, cardW } = cardGeometry(w);
+  if (stale) parts.push('<g opacity="0.45">');
   ads.rows.slice(0, n).forEach((r, i) => {
     const x = CARD_MARGIN + i * (cardW + CARD_MARGIN);
     const line = adsRowLine(r);
@@ -1640,6 +1644,7 @@ function adsInner(w) {
     parts.push(`<circle cx="${x + 20}" cy="${CARD_TOP + 63}" r="5" fill="${line.color}"/>`);
     parts.push(`<text x="${x + 30}" y="${CARD_TOP + 67}" font-family="${SANS}" font-size="11.5" font-weight="600" fill="${line.color}">${esc(line.text)}</text>`);
   });
+  if (stale) parts.push('</g>');
   return parts.join('');
 }
 
@@ -2154,7 +2159,8 @@ ws.on('message', (buf) => {
         if (win) {
           // press a window -> re-price the cards; press it again -> back to today
           adsPreset = adsPreset === win.preset ? 'today' : win.preset;
-          renderAll(); // highlight + "loading…" instantly
+          log('ads window ->', adsPreset);
+          renderAll(); // title flips + cards dim instantly
           fetchAds().then(renderAll);
         }
         break;
