@@ -1527,12 +1527,13 @@ function adsConfig() {
 }
 
 const ADS_PRESETS = { today: 'Today', yesterday: 'Yesterday', last_7d: 'Last 7 Days', last_30d: 'Last 30 Days', maximum: 'All Time' };
-const ADS_WIN_KEYS = [ // bottom-row window buttons
-  { preset: 'yesterday', words: ['Yesterday'] },
+const ADS_WIN_KEYS = [ // bottom-row window buttons; key 0 shows the LIVE window
+  { toggle: true },
   { preset: 'last_7d', words: ['Last', '7 Days'] },
   { preset: 'last_30d', words: ['Last', '30 Days'] },
   { preset: 'maximum', words: ['All', 'Time'] },
 ];
+const ADS_PRESET_WORDS = { today: ['Today'], yesterday: ['Yesterday'], last_7d: ['Last', '7 Days'], last_30d: ['Last', '30 Days'], maximum: ['All', 'Time'] };
 const ADS_PRESET_ORDER = ['today', 'yesterday', 'last_7d', 'last_30d', 'maximum'];
 let adsPreset = 'today';
 let adsDialTimer = null;
@@ -1692,6 +1693,19 @@ function adsWinKeySvg(col) {
   parts.push(`<rect width="144" height="144" rx="14" fill="${C.bg}"/>`);
   const win = ADS_WIN_KEYS[col];
   if (!win) { parts.push('</svg>'); return parts.join(''); }
+  if (win.toggle) {
+    // the status key: its big label IS the window being shown right now
+    parts.push(`<rect x="3" y="3" width="138" height="138" rx="12" fill="${C.coral}"/>`);
+    const words = ADS_PRESET_WORDS[adsPreset] || ['Today'];
+    const y0 = words.length > 1 ? 46 : 58;
+    words.forEach((word, i) => {
+      parts.push(`<text x="72" y="${y0 + i * 24}" text-anchor="middle" font-family="${SANS}" font-size="21" font-weight="800" fill="#17151E">${esc(word)}</text>`);
+    });
+    parts.push(`<text x="72" y="102" text-anchor="middle" font-family="${SANS}" font-size="12" font-weight="700" fill="#17151E">SHOWING NOW</text>`);
+    parts.push(`<text x="72" y="126" text-anchor="middle" font-family="${SANS}" font-size="10" fill="#3A3226">${adsPreset === 'today' ? 'press: yesterday' : 'press: today'}</text>`);
+    parts.push('</svg>');
+    return parts.join('');
+  }
   const active = adsPreset === win.preset;
   if (active) {
     // pressed state = the whole key lights up coral, no squinting required
@@ -2182,8 +2196,10 @@ ws.on('message', (buf) => {
         }
         const win = ADS_WIN_KEYS[col];
         if (win) {
-          // press a window -> re-price the cards; press it again -> back to today
-          adsPreset = adsPreset === win.preset ? 'today' : win.preset;
+          // status key toggles today<->yesterday (and returns from any window);
+          // the other keys jump to their window, press again -> back to today
+          if (win.toggle) adsPreset = adsPreset === 'today' ? 'yesterday' : 'today';
+          else adsPreset = adsPreset === win.preset ? 'today' : win.preset;
           log('ads window ->', adsPreset);
           renderAll(); // title flips + cards dim instantly
           fetchAds().then(renderAll);
