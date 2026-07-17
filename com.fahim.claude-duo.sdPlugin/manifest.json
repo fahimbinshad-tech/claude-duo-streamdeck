@@ -207,6 +207,20 @@
           "Image": "imgs/crm-lead"
         }
       ]
+    },
+    {
+      "UUID": "com.fahim.claude-duo.skillkey",
+      "Name": "Skill Key",
+      "Tooltip": "One most-used skill per key (by key position) \u2014 press runs it in a fresh Warp tab",
+      "Icon": "imgs/skills",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/skills"
+        }
+      ]
     }
   ]
 }
